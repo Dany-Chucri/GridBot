@@ -2,7 +2,7 @@
 
 > **Status:** Authoritative design reference
 > **Assets:** BTC-PERP, ETH-PERP
-> **Revision:** 1.1 — clarifications and enhancements from second design review (see decision log 12.3)
+> **Revision:** 1.3 — parameter consistency fixes: ETH expansion/breakout buffer, flattenability formula correction (see decision log 12.4, entries 20–21)
 
 ---
 
@@ -96,10 +96,11 @@ Batch operations are atomic from the exchange's perspective. The full cancel-the
 
 ### 2.4 Rate Limits & Open Order Limits
 
-HL imposes per-user rate limits on API calls and a finite cap on open orders. The design must:
+HL imposes per-user rate limits on API calls and a finite cap on open orders (base: 1000, scaling with volume up to 5000). The design must:
 - Minimize API call count (batch operations, not individual calls)
 - Track open order count across both assets to stay below limits
 - Use staggered order placement (nearest levels first) to avoid large bursts
+- Budget order slots for server-side backstop stop-losses: 2 slots (1 per asset, see section 6.8). These are always-on and must not be displaced by grid orders.
 
 ### 2.5 Exchange Maintenance & Downtime
 
@@ -450,6 +451,68 @@ order_size = clamp(order_size, min_size, max_size)
 
 The distinction matters for perps. Mid price reflects current market microstructure. Mark price reflects the exchange's fair-value estimate and is what determines liquidation.
 
+### 5.7 Dynamic Slippage Model
+
+The static `slippage_buffer` (1–2 bps) from section 5.4 is a reasonable default for calm conditions but fails to capture two realities: (1) price movement between grid calculation and order placement scales with volatility, and (2) emergency flatten slippage is a function of position size, spread, and book depth — not a constant. This section replaces the static buffer with condition-aware estimates and introduces a position sizing constraint that prevents accumulating unflattenable positions.
+
+#### Grid Order Slippage (Post-Only)
+
+Grid orders are limit orders with zero *execution* slippage by definition — Post-Only guarantees maker fills. The `slippage_buffer` in the grid step formula (section 5.4) represents price movement between calculation and placement. This component should scale with short-term volatility:
+
+```
+grid_slippage_buffer = base_slippage_bps + (realized_vol / baseline_vol - 1) * vol_slippage_scale
+
+grid_slippage_buffer = clamp(grid_slippage_buffer, min_slippage_bps, max_slippage_bps)
+```
+
+| Parameter | Default | Reasoning |
+|---|---|---|
+| `base_slippage_bps` | 1.5 | Normal-conditions floor |
+| `baseline_vol` | Trailing 7d median vol | Reference point for "normal" |
+| `vol_slippage_scale` | 2.0 | Sensitivity to vol increase |
+| `min_slippage_bps` | 1.0 | Hard floor |
+| `max_slippage_bps` | 10.0 | Cap — beyond this, circuit breakers should be firing |
+
+This replaces the static `slippage_buffer` in the grid step floor formula (section 5.4). The formula becomes:
+
+```
+effective_min_step = max(
+    ATR_based_step,
+    2 * maker_fee + current_spread_bps + grid_slippage_buffer + safety_margin
+)
+```
+
+#### Emergency Flatten Slippage (IOC)
+
+Flatten slippage is a function of position size, current spread, and book depth:
+
+```
+estimated_flatten_slippage_bps = current_spread_bps + (position_size / recent_avg_depth) * depth_impact_scale
+```
+
+Where `recent_avg_depth` is the rolling average of visible book depth within 50 bps of mid (computed from periodic L2 snapshots or WS book data). `depth_impact_scale` is a calibration constant (default: 1.0, tuned during testnet soak).
+
+This estimate feeds into:
+- The emergency flatten protocol (section 6.7) as the basis for `max_flatten_slippage_bps`.
+- The worst-case loss calculation (section 6.3) for honest risk budgeting.
+- The flattenability constraint below.
+
+#### Flattenability Constraint
+
+The bot must never accumulate a position it cannot flatten within its slippage budget. Each cycle, after computing desired position limits:
+
+```
+max_flattenable_position = (max_flatten_slippage_bps - current_spread_bps) / depth_impact_scale * recent_avg_depth
+
+effective_hard_cap = min(hard_cap, max_flattenable_position)
+```
+
+The `- current_spread_bps` term is required for consistency with the flatten slippage estimation formula above: spread is a fixed cost component of any flatten, so only the remainder of the slippage budget is available for position-dependent market impact. Omitting it would overstate the flattenable position by `current_spread_bps / depth_impact_scale * recent_avg_depth`.
+
+If `max_flattenable_position < hard_cap`, log a warning and use the tighter limit. This dynamically reduces position limits when liquidity thins — exactly when the risk of being stuck in a position is highest.
+
+**Why not a full market impact model:** A proper impact model requires order-level book data, hidden liquidity estimation, and calibration against historical fills. That is market-maker infrastructure. The linear approximation above captures the right direction (larger positions + thinner books = more slippage) without requiring sophistication the bot doesn't have. The `depth_impact_scale` parameter absorbs calibration error and should be tuned conservatively (overestimate impact) during testnet and early mainnet phases.
+
 ---
 
 ## 6. Risk Model
@@ -514,11 +577,19 @@ breakout = (
 **Action sequence on breakout:**
 
 1. **Immediately** cancel all resting grid orders (both layers, batch cancel).
-2. **If inventory is significant** (position > threshold): flatten to zero using IOC/market orders. Accept taker fees — this is the one scenario where taking liquidity is justified.
+2. **If inventory is significant** (position > threshold): execute the emergency flatten protocol (section 6.7). This protocol handles depth assessment, chunked execution, partial fills, and retry escalation.
 3. **Enter cooldown** for `cooldown_minutes` (default: 30 min).
 4. **After cooldown:** re-evaluate regime. Only restart the Core Grid if regime reads RANGE.
 
-**This is the single most important safety mechanism.** Most retail grid bots omit breakout detection entirely. They accumulate inventory in a trend until margin is exhausted. The flatten-on-breakout design caps the worst-case loss to: (grid range * position at breakout) + flatten slippage + taker fees. This is quantifiable and bounded, unlike the unbounded loss of holding through a trend.
+**This is the single most important safety mechanism.** Most retail grid bots omit breakout detection entirely. They accumulate inventory in a trend until margin is exhausted. The flatten-on-breakout design caps the worst-case loss to:
+
+```
+worst_case_loss = (grid_range * position_at_breakout) + estimated_flatten_slippage + taker_fees
+```
+
+Where `estimated_flatten_slippage` is computed dynamically from the slippage model (section 5.7), not assumed to be a small constant. This is quantifiable and bounded, unlike the unbounded loss of holding through a trend.
+
+**Pre-flight validation:** Before the bot starts, the pre-flight check (section 6.1) must verify that `worst_case_loss` under maximum inventory does not exceed `max_daily_drawdown`. If it does, reduce `max_abs_position` until the math works. This closes the loop between position sizing, slippage estimation, and drawdown limits — the bot cannot start in a configuration where a single breakout could breach its own safety limits.
 
 ### 6.4 Volatility Circuit Breakers
 
@@ -527,7 +598,7 @@ A rolling volatility metric (realized stdev of 1s/5s returns, or ATR proxy from 
 | Threshold | Default | Action |
 |---|---|---|
 | `vol_pause_threshold` | Top 20th percentile of trailing 7d vol | Stop placing new orders. Existing orders remain. |
-| `vol_kill_threshold` | Top 5th percentile (or absolute spike rule) | Cancel all orders + flatten position. Enter cooldown. |
+| `vol_kill_threshold` | Top 5th percentile (or absolute spike rule) | Cancel all orders + execute the emergency flatten protocol (section 6.7). Enter cooldown. |
 
 **Restart condition:** Vol must normalize below `vol_pause_threshold` for a sustained period (default: 10 minutes) before the grid resumes.
 
@@ -552,7 +623,7 @@ Absolute safety stops that override all other logic:
 
 | Limit | Action on Breach |
 |---|---|
-| `max_daily_drawdown` (e.g., 3% of account) | Cancel all orders + flatten + disable until manual restart |
+| `max_daily_drawdown` (e.g., 3% of account) | Cancel all orders + execute emergency flatten protocol (section 6.7) + disable until manual restart |
 | `max_weekly_drawdown` (e.g., 7% of account) | Same |
 | `max_consecutive_errors` (e.g., 10, excluding maintenance errors) | Same |
 | `max_time_desynced_seconds` (e.g., 30s — local state can't reconcile with exchange) | Same |
@@ -566,6 +637,158 @@ Absolute safety stops that override all other logic:
 - **Measurement:** The drawdown is measured as total PnL change (realized fills + change in unrealized position value + funding payments received/paid) relative to account equity at the start of the rolling window. The exchange-reported PnL (section 10.6) is the authoritative source for this calculation.
 
 These are non-negotiable. When tripped, the bot enters a **dead state** that requires human intervention to restart. This prevents compounding losses during unforeseen conditions.
+
+### 6.7 Emergency Flatten Protocol
+
+Sections 6.3, 6.4, and 6.6 all reference "flatten the position." This section defines exactly how that works. The previous design said "flatten to zero using IOC/market orders" — a single sentence that assumes the IOC fills completely, the exchange is responsive, and slippage is negligible. All three assumptions fail during the exact scenarios that trigger a flatten.
+
+**Flatten is a state machine, not a single order.** When any kill switch fires (breakout, vol kill, drawdown), the bot enters `FLATTENING` state. This state persists until position is zero or the attempt is abandoned with a critical alert.
+
+#### Step 1 — Pre-Flatten Depth Assessment
+
+Before sending the first IOC, assess available liquidity. Use the current order book (L2 snapshot from REST, or cached from WS book subscription):
+
+```
+available_depth = sum of book size within max_flatten_slippage_bps of mid price
+```
+
+- If `available_depth >= position_size`: send a single IOC for the full position.
+- If `available_depth < position_size`: chunk the flatten into tranches of `available_depth * flatten_tranche_pct` (default: 0.8). Do not try to eat the entire visible book — there is hidden liquidity but also slippage acceleration beyond visible depth. Send tranches sequentially with a brief pause between them to allow the book to refill.
+
+**If the L2 snapshot is unavailable** (WS disconnected, REST timeout): skip the depth check and proceed directly to Step 2 with the full position size. A blind IOC is better than no flatten attempt.
+
+#### Step 2 — IOC with Bounded Slippage
+
+Each IOC order uses a limit price to cap slippage, not a pure market order:
+
+```
+ioc_limit_price = mid_price * (1 - max_flatten_slippage_bps / 10000)   # for sells
+ioc_limit_price = mid_price * (1 + max_flatten_slippage_bps / 10000)   # for buys
+```
+
+All flatten IOCs carry the `Reduce Only` flag — the exchange enforces that these cannot increase position size, providing a server-side safety net even if local state is wrong.
+
+**Why IOC with limit, not pure market:** HL's trigger market orders have a built-in 10% slippage tolerance. For the bot's explicit flatten logic, we want tighter control. A limit-priced IOC fills everything available up to the limit and cancels the rest — giving both aggression and a price floor. The retry loop (Step 3) handles the unfilled remainder.
+
+#### Step 3 — Partial Fill Retry Loop
+
+```
+flatten_start = now()
+remaining = abs(position)
+
+while remaining > min_order_size AND elapsed < flatten_time_budget:
+    refresh mid_price from latest WS data (or REST fallback)
+    compute ioc_limit_price from current mid
+    send IOC reduce-only for min(remaining, tranche_size)
+    wait for fill confirmation (up to 2 seconds)
+    remaining = abs(exchange_reported_position)   # always re-query; don't trust local math
+
+    if remaining > 0:
+        log warning: "partial flatten, {remaining} remaining, retrying"
+        pause flatten_retry_pause_ms for book refill
+
+if remaining > 0:
+    # Escalation: widen slippage limit to 2x
+    escalated_slippage = max_flatten_slippage_bps * 2
+    recompute ioc_limit_price with escalated_slippage
+    send final IOC at escalated limit
+    wait for fill (up to 2 seconds)
+    remaining = abs(exchange_reported_position)
+
+if remaining > 0:
+    # Failed to flatten — CRITICAL alert, enter dead state
+    alert CRITICAL: "flatten failed, residual position {remaining}, manual intervention required"
+    enter DEAD state (no further trading, all orders already cancelled)
+```
+
+**Key behaviors:**
+- Every iteration re-queries the exchange for the actual position. Never rely on local arithmetic — fills may have occurred from other paths (backstop trigger, manual intervention).
+- The `mid_price` is refreshed each iteration because during a breakout, price is moving fast. Using a stale price for the IOC limit would guarantee non-fills.
+- The escalation step doubles the slippage budget for one final attempt. If the book has gapped beyond 2x the normal budget, the situation requires human intervention — continued widening risks filling at catastrophic prices.
+
+#### Parameters
+
+| Parameter | Default (BTC) | Default (ETH) | Reasoning |
+|---|---|---|---|
+| `max_flatten_slippage_bps` | 50 | 75 | Wide enough to fill in stress; bounded enough to prevent absurd prices. ETH wider due to lower liquidity. |
+| `flatten_time_budget_seconds` | 10 | 10 | If you can't flatten in 10 seconds, something is seriously wrong |
+| `flatten_tranche_pct` | 0.8 | 0.8 | Don't try to eat 100% of visible depth |
+| `flatten_retry_pause_ms` | 300 | 300 | Brief pause for book refill between tranches |
+
+#### Interaction with FLATTENING State
+
+While in `FLATTENING` state:
+- No grid orders are placed (both layers suppressed).
+- The main loop continues running (for price updates and state tracking) but skips grid computation.
+- The flatten retry loop runs as a sub-procedure within the main cycle — it does not block the event loop indefinitely. If the time budget expires mid-cycle, the bot enters DEAD state and the cycle completes normally (with all trading suppressed).
+- The `FLATTENING` state is persisted to StateStore. On restart, if the bot was in `FLATTENING`, it re-queries position and resumes the flatten protocol if position is non-zero.
+
+### 6.8 Server-Side Stop-Loss Backstop (Dead-Man's Switch)
+
+Every mechanism in sections 6.3–6.7 depends on the bot process being alive and the exchange API being reachable *from the bot*. If the bot crashes, the VPS goes down, or network connectivity is lost during a crisis, the position is unprotected. This section defines a last line of defense that executes server-side, independent of the bot.
+
+**Mechanism:** Hyperliquid supports server-side trigger orders (TP/SL) that evaluate against mark price continuously and execute even if the client is disconnected. The bot maintains a **standing stop-loss trigger order** for each asset where it holds a position.
+
+#### Trigger Order Specification
+
+```python
+order_type = {
+    "trigger": {
+        "triggerPx": backstop_trigger_price,
+        "isMarket": True,      # trigger market — maximum fill probability
+        "tpsl": "sl"           # stop-loss direction validation
+    }
+}
+reduce_only = True              # exchange-enforced: cannot increase position
+```
+
+#### Lifecycle
+
+1. **Placement:** Whenever the bot's net position changes (fill detected via WS or REST reconciliation), update the backstop:
+   - **Direction:** opposite to current position (long position → sell stop; short → buy stop).
+   - **Size:** full current position size.
+   - **Trigger price:** set wider than the bot's own breakout threshold:
+     ```
+     backstop_trigger = anchor - (breakout_atr_distance + backstop_buffer_atr) * ATR   # for longs
+     backstop_trigger = anchor + (breakout_atr_distance + backstop_buffer_atr) * ATR   # for shorts
+     ```
+   - The `backstop_buffer_atr` (default: 1.0 ATR) ensures the bot's own breakout flatten fires first under normal conditions. The exchange-side stop is a fallback for when the bot fails to act.
+
+2. **Updates:** On every position change:
+   - Cancel the existing backstop order.
+   - Place a new one with updated size and trigger price.
+   - Use deterministic client order ID: `hash("backstop", symbol, position_direction, grid_config_hash)` for idempotency.
+   - This cancel-and-replace is included in the same batch operation as other order updates when possible, to minimize API calls.
+
+3. **Removal:** When position reaches zero, cancel the backstop order. Do not leave orphaned triggers — an orphaned stop-loss on a zero position could open a new position if the reduce-only flag somehow fails (defense in depth: always clean up).
+
+4. **On anchor shift:** Update the backstop trigger price to track the new anchor. The backstop must always be positioned relative to the *current* anchor, not a stale one.
+
+5. **On restart:** The restart sequence (section 4.4) reconciles backstop orders like any other order. If a backstop exists on the exchange matching the current config, adopt it. If it's stale (wrong size or trigger price), cancel and replace.
+
+#### Parameters
+
+| Parameter | Default | Reasoning |
+|---|---|---|
+| `backstop_buffer_atr` | 1.0 | Gap between bot's breakout threshold and exchange stop — bot acts first normally |
+| `backstop_order_type` | trigger market, reduce-only | Maximum fill probability when the bot has failed |
+
+#### Order Slot Budget
+
+Each backstop consumes 1 slot from HL's open order limit (base: 1000). With 2 assets, that is 2 slots — negligible. The open order count tracking (section 2.4) must include backstop orders in its budget.
+
+#### Why Trigger Market
+
+When the backstop fires, the situation is already catastrophic: the bot is dead AND price has blown through the breakout threshold AND continued another full ATR beyond that. Getting out at any price is more important than price precision. HL's built-in 10% slippage tolerance on trigger market orders is acceptable — this is a survival cost, not a trading cost.
+
+#### Why Reduce Only
+
+Prevents the backstop from accidentally opening a position in the opposite direction if the bot's state was stale when the order was placed. HL enforces reduce-only semantics server-side — a reduce-only order that would increase position is rejected. This is a critical safety property.
+
+#### What This Does NOT Protect Against
+
+- **Exchange-wide outages** where the matching engine itself is down. No client-side or server-side trigger mechanism can address this. The low leverage requirement (section 6.1) and liquidation buffer are the defenses for that scenario — they ensure the position survives extended downtime without liquidation.
+- **Oracle manipulation** that moves the mark price without corresponding market moves. This is an exchange-level risk mitigated by HL's robust mark price index (median of multiple sources). The bot cannot defend against it.
 
 ---
 
@@ -773,9 +996,14 @@ Alerts (via Telegram, Discord, or email) must fire on:
 | Event | Severity |
 |---|---|
 | Kill switch triggered (drawdown, errors) | Critical |
+| Flatten failed — residual position after time budget expired (section 6.7) | Critical |
+| Server-side backstop triggered (section 6.8) — bot was unable to flatten, exchange stop fired | Critical |
 | Breakout flatten executed | High |
+| Flatten partial fill — retrying (section 6.7) | High |
+| Flattenability constraint tightened hard cap (section 5.7) | High |
 | Reconcile discrepancy detected | High |
 | Position exceeds soft cap | Warning |
+| Backstop order update failed — position may be unprotected (section 6.8) | Warning |
 | Repeated Post-Only rejections (> 5/min) | Warning |
 | WS disconnected / reconnecting | Warning |
 | Exchange maintenance detected | Info |
@@ -836,7 +1064,7 @@ capital_allocation: 0.60   # 60% of total risk budget
 expansion_levels_per_side: 15
 expansion_step_mult: 1.5   # expansion step = core step * 1.5
 expansion_range_atr: 4.0
-expansion_allocation: 0.40 # 40% of BTC's risk budget (not total)
+expansion_allocation: 0.30 # 30% of BTC's risk budget (not total)
 
 # === Anchoring ===
 anchor_shift_threshold_atr: 1.5
@@ -873,6 +1101,22 @@ stagger_initial_levels: 5       # nearest 5 per side placed immediately
 maker_only: true                # Post-Only for all grid orders
 taker_allowed: "emergency flatten only (IOC)"
 post_only_max_retries: 3
+
+# === Dynamic Slippage (section 5.7) ===
+base_slippage_bps: 1.5           # normal-conditions floor for grid slippage buffer
+vol_slippage_scale: 2.0          # sensitivity of slippage buffer to vol increase
+min_slippage_bps: 1.0            # hard floor on grid slippage buffer
+max_slippage_bps: 10.0           # hard cap on grid slippage buffer
+depth_impact_scale: 1.0          # calibration constant for flatten slippage estimate (tune on testnet)
+
+# === Emergency Flatten (section 6.7) ===
+max_flatten_slippage_bps: 50     # IOC limit price bound for emergency flatten
+flatten_time_budget_seconds: 10  # max time to attempt flatten before entering dead state
+flatten_tranche_pct: 0.80        # fraction of visible depth to consume per tranche
+flatten_retry_pause_ms: 300      # pause between tranches for book refill
+
+# === Server-Side Backstop (section 6.8) ===
+backstop_buffer_atr: 1.0         # gap between bot's breakout threshold and exchange-side stop
 ```
 
 ### 11.2 ETH-PERP Starter Configuration
@@ -882,7 +1126,9 @@ Same structure as BTC with these adjustments:
 ```yaml
 capital_allocation: 0.40         # 40% of total risk budget
 grid_step_bps: 18-30             # ETH typically wider spreads than BTC
+expansion_range_atr: 3.5         # tighter than BTC (4.0) to maintain 0.5 ATR buffer to breakout threshold
 breakout_atr_distance: 4.0       # ETH breaks out more sharply; trigger earlier (tighter than BTC's 4.5)
+max_flatten_slippage_bps: 75     # wider than BTC due to lower liquidity
 ```
 
 ### 11.3 Portfolio-Level Parameters
@@ -938,6 +1184,16 @@ A record of every significant design decision, including what was changed during
 | 14 | **Clarification** | **Drawdown calculation basis unspecified** — doc didn't define whether drawdown includes unrealized PnL, or whether "daily" means calendar day vs rolling window. Calendar days create a boundary exploit; realized-only ignores accumulating adverse positions. | Specified: realized + unrealized combined, rolling windows (24h / 168h), exchange-reported PnL as authoritative source. Documented the wick-flatten-reverse tradeoff and why it's accepted. | Unrealized must be included — ignoring it defeats the purpose of the limit. Rolling windows prevent the calendar-boundary exploit. The wick tradeoff is bounded and small; the alternative is unbounded. |
 | 15 | **Clarification** | **Staggered placement + fill interaction unclear** — if the outermost placed level fills and the flip targets a queued level, the doc didn't specify whether the queued level is promoted immediately or waits for the next stagger cycle. | Added "fill-triggered level promotion" to section 5.3: a fill on any placed level immediately promotes the next queued level on that side. Deterministic order IDs prevent duplication if the promoted level and flip order target the same price. | Without explicit promotion, there's a gap in coverage after a fill at the stagger boundary. The dedup via order IDs makes this safe even if both paths (flip + promotion) target the same level. |
 | 16 | **Note** | **Low-vol regime interaction between step and size** — in low vol, ATR-based step shrinks (toward fee floor) while vol-scaled size increases (toward max_size). Tighter spacing + larger orders = rapid inventory accumulation if vol then spikes. | Added explanatory note to section 5.5 documenting the interaction. No structural change — `max_size` clamp and fee floor are the existing defenses. Noted that `max_size` should be set based on risk tolerance, not exchange maximums. | This is a parameter tuning concern, not a design flaw. The existing clamps handle it, but the interaction is non-obvious and worth documenting so the implementer sets `max_size` conservatively. |
+| 17 | **Enhancement** | **Emergency flatten has no retry protocol** — a single IOC that partially fills or times out leaves residual exposure during a crisis. The design said "flatten using IOC/market orders" with no handling for partial fills, API timeouts, or thin books. | Added section 6.7: flatten state machine with pre-flatten depth assessment, chunked IOC tranches with bounded slippage limits, partial fill retry loop with time budget (10s), slippage escalation on failure, and dead-state fallback with critical alert. Updated sections 6.3, 6.4, 6.6 to reference the protocol. | During extreme moves, the order book thins and a single IOC may not fill completely. The retry loop with escalating slippage ensures the bot keeps trying within a time budget, then fails safely (dead state + alert) if it can't flatten — never silently leaving residual exposure. |
+| 18 | **Enhancement** | **No protection if bot process dies during a crisis** — all risk mechanisms depend on the bot being alive and connected. A crash, VPS failure, or network outage during a breakout leaves the position completely unmanaged. | Added section 6.8: server-side stop-loss backstop using HL trigger orders (`reduce_only=true`, trigger market, `tpsl="sl"`). Maintained automatically as position changes. Set 1.0 ATR wider than bot's own breakout threshold so bot acts first under normal conditions. Updated section 2.4 to budget order slots. | HL trigger orders execute server-side on mark price regardless of client connectivity. This is the last line of defense — it costs 1 order slot per asset (negligible) and provides protection against the one scenario no client-side logic can handle: the client not running. |
+| 19 | **Enhancement** | **Slippage buffer is static (1–2 bps) and flatten slippage is unmodeled** — the worst-case loss formula treats flatten slippage as a small additive constant, but during breakouts (when flattens occur) slippage scales with position size, spread, and book depth. The formula understates actual risk. | Added section 5.7: dynamic slippage model. Grid slippage buffer scales with realized vol. Flatten slippage modeled as `f(position, spread, depth)`. New flattenability constraint dynamically reduces position hard cap when liquidity thins. Pre-flight check validates worst-case loss vs drawdown limit. | The static buffer is fine for grid orders (Post-Only, zero execution slippage). But flatten slippage dominates worst-case loss and scales with the exact conditions that trigger flattening. The flattenability check closes the loop — position limits adapt to current liquidity, ensuring the bot never accumulates a position it can't exit within budget. |
+
+### 12.4 Third Design Review — Parameter Consistency Fixes
+
+| # | Type | Finding | Change Made | Reasoning |
+|---|---|---|---|---|
+| 20 | **Bug** | **ETH expansion range equals breakout threshold (zero buffer)** — ETH inherits `expansion_range_atr: 4.0` from BTC defaults but overrides `breakout_atr_distance` to 4.0. Section 6.3 requires a buffer between the Expansion outer edge and the breakout threshold ("0.5 ATR buffer… provides a narrow window for mean-reversion at extreme levels before the safety mechanism fires"). With zero buffer, the outermost Expansion levels sit exactly at the breakout distance — they either never fill (breakout fires simultaneously) or create a race between Expansion fill processing and breakout detection. | Added `expansion_range_atr: 3.5` to ETH config (section 11.2). This restores a 0.5 ATR buffer between ETH's Expansion outer edge (3.5 ATR) and its breakout threshold (4.0 ATR), matching the buffer ratio in the BTC config (4.0 vs 4.5). | The tighter ETH breakout distance is correct (ETH breaks out more sharply). The fix is on the Expansion side: fewer Expansion levels over a narrower range, which is consistent with ETH's tighter breakout behavior — less room to speculate on mean-reversion at extremes when the safety boundary is closer. |
+| 21 | **Bug** | **Flattenability constraint formula omits spread component** — the flatten slippage formula is `spread + (pos / depth) * scale`, but the derived `max_flattenable_position` was `max_slippage / scale * depth` — solving as if spread is zero. This overstates the flattenable position. Example: at `max_slippage=50 bps`, `spread=10 bps`, `scale=1.0`, `depth=100`, the old formula yields max position 5000 (actual slippage at exit: 60 bps, exceeding budget) vs correct value of 4000 (actual slippage: 50 bps). | Corrected formula in section 5.7 to `(max_flatten_slippage_bps - current_spread_bps) / depth_impact_scale * recent_avg_depth`. Added explanatory note on why the subtraction is required for consistency with the slippage estimation formula. | The flattenability constraint must be the exact inverse of the slippage estimation — both formulas operate on the same model. The spread is a fixed cost of any flatten (paid regardless of position size), so only the remainder of the slippage budget is available for position-dependent impact. Without the correction, the constraint is permissive by exactly `spread / scale * depth`, which grows when spreads widen — the worst time to be permissive. |
 
 ---
 
