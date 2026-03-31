@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "WebFetch(domain:hyperliquid.gitbook.io)"
+      "WebFetch(domain:hyperliquid.gitbook.io)",
+      "Bash(pip install:*)"
     ]
   }
 }

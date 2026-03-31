@@ -1,0 +1,41 @@
+# GridBot Configuration
+# Copy to gridbot.yaml and adjust values.
+# Omitted fields use defaults from docs/design.md sections 11.1-11.3.
+
+testnet: true  # Start on testnet — switch to false for mainnet
+
+assets:
+  - symbol: BTC-PERP
+    leverage: 2.0
+    levels_per_side: 25
+    capital_allocation: 0.60
+    breakout_atr_distance: 4.5
+    cooldown_minutes: 30
+    max_daily_drawdown_pct: 0.03
+    max_weekly_drawdown_pct: 0.07
+    max_flatten_slippage_bps: 50
+
+  - symbol: ETH-PERP
+    leverage: 2.0
+    levels_per_side: 25
+    capital_allocation: 0.40
+    breakout_atr_distance: 4.0
+    expansion_range_atr: 3.5
+    cooldown_minutes: 30
+    max_daily_drawdown_pct: 0.03
+    max_weekly_drawdown_pct: 0.07
+    max_flatten_slippage_bps: 75
+
+portfolio:
+  total_risk_budget_pct: 0.10
+  btc_weight: 0.60
+  eth_weight: 0.40
+  portfolio_delta_mult: 0.75
+  pnl_crosscheck_interval_seconds: 60
+  pnl_divergence_threshold_usd: 50
+
+operational:
+  reconcile_interval_seconds: 5
+  max_consecutive_errors: 10
+  max_time_desynced_seconds: 30
+  stagger_initial_levels: 5
