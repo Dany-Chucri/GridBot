@@ -324,7 +324,7 @@ The bot uses an anchored adaptive grid: orders are placed symmetrically around a
 
 #### Anchor Re-centering Rules
 
-Re-anchoring is **never** immediate. It requires all three conditions simultaneously:
+Re-anchoring is **never** immediate. It requires all four conditions simultaneously:
 
 ```
 re_anchor = (
