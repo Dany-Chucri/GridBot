@@ -1,5 +1,49 @@
 # Progress Log
 
+## 2026-04-01 — Implementation plan review and corrections
+
+**Goal:** Review the implementation plan against the design doc and fix identified issues.
+
+**Changes:**
+- Phase 1.9: Added note that GridEngine receives regime via state, Phase 1 tests must set `state.regime` explicitly
+- Phase 1.5: Added inline note clarifying distinction between `expansion_range_atr` (level extent) and `breakout_atr_distance` (activation upper bound), including the 0.5 ATR buffer zone
+- Phase 1.2: Replaced "confirm on testnet" with placeholder constants (validated in Phase 8)
+- Phase 2.6: Clarified that equity for drawdown checks comes from exchange-reported account equity fetched by Supervisor; renamed `_pnl_history` to `_equity_history` with `record_equity()` API
+- Phase 2.9: Changed `pos.price` to `pos.mark_price` in portfolio delta formula with rationale
+- Phase 3.1: Added `schema_version` table and migration strategy to StateStore schema
+- Phase 4.1: Replaced `allMids` with `l2Book` as primary WS subscription for bid/ask/spread; `allMids` demoted to fallback
+- Phase 5.1: Specified average-cost method for PnL computation (matches Hyperliquid reporting), added position-flip case
+- Phase 6.3: Added partial batch failure handling — HL batches are not transactional; per-order response parsing, local state reconciliation on partial failure
+- Phase 7.4: Decoupled main loop tick (`cycle_interval_seconds`) from REST reconciliation timer (`reconcile_interval_seconds`)
+- Phase 7.5: Expanded from 8-step to 10-step cycle — added exchange equity fetch before risk eval (step 1), backstop update after grid reconciliation (step 6), REST reconciliation on separate timer (step 9)
+- Phase 2.1: Added vol history bootstrap strategy — 48h minimum window expanding to 7d, with conservative bias (tightened percentile thresholds) during bootstrap period
+
+**Files modified:**
+- `docs/plans/implementation-plan.md` — All corrections above
+
+**Status:** Complete
+
+---
+
+## 2026-03-30 — Implementation plan
+
+**Goal:** Create a structured end-to-end implementation plan covering all modules from stub to testnet deployment.
+
+**Changes:**
+- Wrote 8-phase implementation plan with subtasks, test requirements, and acceptance criteria per phase
+- Phases ordered by dependency: pure logic first (GridEngine, RiskManager), then infrastructure (StateStore, MarketData), then exchange ops (OrderManager, PnLMonitor), then orchestration (Supervisor), then integration
+
+**Files added:**
+- `docs/plans/implementation-plan.md` — Master implementation plan
+
+**Files modified:**
+- `REPO_MAP.md` — Added docs/plans/ section
+- `progress.md` — This entry
+
+**Status:** Complete
+
+---
+
 ## 2026-03-30 — Code and documentation scaffolding
 
 **Goal:** Set up the full project structure with module stubs, types, configuration, tests, and documentation — ready for implementation.

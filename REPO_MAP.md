@@ -16,6 +16,9 @@
 - `research.md` — Background research and references
 - `risk-model.md` — Risk model implementation guide
 
+## docs/plans/
+- `implementation-plan.md` — End-to-end 8-phase implementation plan with acceptance criteria
+
 ## gridbot/
 - `__init__.py` — Package init, version
 - `config.py` — Configuration loading and parameter dataclasses
