@@ -1,6 +1,6 @@
 # GridBot
 
-Hyperliquid perpetual futures grid trading bot (BTC-PERP, ETH-PERP). Python. Design doc, **MUST READ**: `docs/design.md`.
+Hyperliquid perpetual futures grid trading bot (BTC-PERP, ETH-PERP). Python. Design doc, **MUST READ**: `docs/design.md` IN ITS ENTIRETY. When referred to a specific planning document, be sure to read said plan in its entirety.
 
 ## Core Invariants — Do Not Violate
 
