@@ -3,7 +3,8 @@
     "allow": [
       "WebSearch",
       "WebFetch(domain:hyperliquid.gitbook.io)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python -m pytest tests/test_grid_engine.py -v)"
     ]
   }
 }

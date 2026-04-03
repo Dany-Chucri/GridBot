@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-04-03 — Phase 1 review fixes
+
+**Goal:** Fix issues found during Phase 1 code review.
+
+**Changes:**
+- Config hash now uses stable `grid_config.range_atr` and `grid_config.step_bps` instead of dynamically-computed effective step — prevents order churn from spread/vol fluctuations
+- `compute_effective_step` now takes `mid_price` and computes `ATR / mid_price * 10_000` directly per design doc section 5.4, instead of using realized_vol as a proxy
+- Soft-cap inventory skew clamps unwind-side boost to `max_abs_position / levels_per_side` to prevent oversized orders
+- Removed dead `_did_reanchor` flag (was never set to True; Supervisor will own re-anchor state)
+- Added test for expansion sizing using `expansion_allocation` vs `capital_allocation`
+- Added test for soft-cap unwind size clamp
+- Fixed test comments referencing old `capital_allocation=0.60` (now 0.70)
+
+**Files modified:**
+- `gridbot/grid_engine.py` — config hash fix, effective step formula, skew clamp, dead code removal
+- `tests/test_grid_engine.py` — updated grid spacing tests for new formula, added expansion sizing and skew clamp tests
+
+**Status:** Complete
+
+**Notes:** Pending flips at HARD_CAP on the exposure-increasing side are marked reduce_only per design doc section 7.6. These will be rejected by the exchange (e.g., reduce-only buy when long). This is correct per spec (exchange as safety net) but will produce rejected orders each cycle. Flagged for future consideration.
+
+---
+
+## 2026-04-02 — Phase 1: GridEngine implementation
+
+**Goal:** Implement all GridEngine methods per implementation plan Phase 1, with comprehensive tests.
+
+**Changes:**
+- Implemented all 9 GridEngine sub-tasks: grid spacing formula (5.4/5.7), order sizing (5.5), inventory classification and skewing (6.2), core grid levels (5.2 L1), expansion grid levels (5.2 L2), staggered placement (5.3), anchor management (5.1), pending flips (7.6), and compute_desired_orders orchestration (7.1)
+- Constructor now takes both AssetConfig and OperationalConfig (needed for stagger_initial_levels)
+- Added `_compute_expansion_order_size` helper for expansion layer sizing via expansion_allocation fraction
+- Added baseline_vol field to VolMetrics (needed for dynamic slippage buffer formula)
+- Added account_equity, stagger_placed_count, drift_start_ms, anchor_epoch fields to AssetState
+- Wrote 77 tests covering all methods; 97% line coverage on grid_engine.py
+
+**Files modified:**
+- `gridbot/grid_engine.py` — Full implementation replacing all NotImplementedError stubs
+- `gridbot/types.py` — Added baseline_vol to VolMetrics; added account_equity, stagger_placed_count, drift_start_ms, anchor_epoch to AssetState
+- `tests/test_grid_engine.py` — Comprehensive test suite (77 tests)
+- `docs/plans/implementation-plan.md` — Marked Phase 1 and all sub-headers [DONE]
+- `REPO_MAP.md` — Updated test description
+- `progress.md` — This entry
+
+**Status:** Complete
+
+**Notes:** GridEngine constructor signature changed from `(AssetConfig)` to `(AssetConfig, OperationalConfig)` — Supervisor will need to pass both when instantiating. The ATR-to-step mapping uses a linear interpolation between grid_step_bps_min/max based on vol_ratio to baseline; this is a reasonable heuristic that can be refined during testnet soak if the design doc provides a more specific formula.
+
+---
+
 ## 2026-04-01 — Implementation plan review and corrections
 
 **Goal:** Review the implementation plan against the design doc and fix identified issues.

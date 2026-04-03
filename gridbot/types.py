@@ -145,6 +145,7 @@ class VolMetrics:
     spread_bps: float          # Current bid-ask spread in basis points
     rolling_return_1m: float   # 1-minute rolling return
     rolling_return_5m: float   # 5-minute rolling return
+    baseline_vol: float = 0.0  # Trailing 7d median vol (reference for "normal")
 
 
 @dataclass
@@ -161,3 +162,7 @@ class AssetState:
     open_orders: list[OpenOrder] = field(default_factory=list)
     pending_flips: list[PendingFlip] = field(default_factory=list)
     cooldown_until_ms: int | None = None
+    account_equity: float = 0.0
+    stagger_placed_count: int = 0
+    drift_start_ms: int | None = None
+    anchor_epoch: int = 0

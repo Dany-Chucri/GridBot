@@ -12,7 +12,7 @@ Eight phases, ordered by dependency. Each phase produces a testable increment. P
 
 ```
 Phase 0: Foundation              [DONE]
-Phase 1: GridEngine              [pure calc, no I/O]
+Phase 1: GridEngine              [DONE]
 Phase 2: RiskManager             [pure logic, no I/O]
 Phase 3: StateStore              [SQLite, no exchange]
 Phase 4: MarketData              [WS + REST connectivity]
@@ -57,7 +57,7 @@ Completed. Types, enums, dataclasses, config loading, project scaffolding, and m
 
 ---
 
-## Phase 1: GridEngine
+## Phase 1: GridEngine [DONE]
 
 **File:** `gridbot/grid_engine.py`
 **Dependencies:** None (pure calculation, uses only types and config)
@@ -65,7 +65,7 @@ Completed. Types, enums, dataclasses, config loading, project scaffolding, and m
 
 GridEngine is the highest-value starting point: fully testable with no mocks, exercises the core strategy logic, and validates the design's math before any exchange integration.
 
-### 1.1 Grid spacing formula
+### 1.1 Grid spacing formula [DONE]
 
 **Method:** `compute_effective_step(vol_metrics) -> float`
 **Design doc:** Section 5.4
@@ -92,7 +92,7 @@ Subtasks:
 - Slippage buffer increases with elevated vol, stays at floor when vol is at baseline.
 - Step clamped to `[min, max]` range.
 
-### 1.2 Order sizing
+### 1.2 Order sizing [DONE]
 
 **Method:** `_compute_order_size(vol_metrics, account_equity) -> float`
 **Design doc:** Section 5.5
@@ -114,7 +114,7 @@ Subtasks:
 - Size is clamped at min/max bounds.
 - Zero or near-zero vol doesn't produce infinity (guard against division by near-zero).
 
-### 1.3 Inventory classification and skewing
+### 1.3 Inventory classification and skewing [DONE]
 
 **Methods:** `_classify_inventory_zone(position_size) -> InventoryZone`, `_apply_inventory_skew(levels, position_size, zone) -> list[GridLevel]`
 **Design doc:** Section 6.2
@@ -136,7 +136,7 @@ Skew behavior:
 - HARD_CAP with long position: all buy levels removed, sell levels have `reduce_only=True`.
 - Symmetric behavior for short positions.
 
-### 1.4 Core grid level computation
+### 1.4 Core grid level computation [DONE]
 
 **Method:** `_compute_core_levels(anchor, step_bps, vol_metrics, inventory_zone, position_size) -> list[GridLevel]`
 **Design doc:** Section 5.2 (Layer 1)
@@ -156,7 +156,7 @@ Subtasks:
 - Buy levels below anchor, sell levels above.
 - Levels correctly spaced by step_bps.
 
-### 1.5 Expansion grid level computation
+### 1.5 Expansion grid level computation [DONE]
 
 **Method:** `_compute_expansion_levels(anchor, mid_price, step_bps, vol_metrics, inventory_zone, position_size) -> list[GridLevel]`
 **Design doc:** Section 5.2 (Layer 2)
@@ -179,7 +179,7 @@ Subtasks:
 - Step is `expansion_step_mult` times the core step.
 - Returns empty when regime doesn't support it (handled by caller, but test the activation condition).
 
-### 1.6 Staggered placement
+### 1.6 Staggered placement [DONE]
 
 **Method:** `_apply_stagger(levels, mid_price, placed_count) -> list[GridLevel]`
 **Design doc:** Section 5.3
@@ -197,7 +197,7 @@ Subtasks:
 - Levels farther than N are excluded.
 - Fill-triggered promotion (higher placed_count) includes additional levels.
 
-### 1.7 Anchor management
+### 1.7 Anchor management [DONE]
 
 **Methods:** `should_reanchor(...)`, `compute_new_anchor(...)`
 **Design doc:** Section 5.1
@@ -216,7 +216,7 @@ Four conditions must ALL be true:
 - Each condition tested in isolation (other three held true, one toggled).
 - `compute_new_anchor` returns mid price.
 
-### 1.8 Pending flips
+### 1.8 Pending flips [DONE]
 
 **Method:** `_include_pending_flips(desired, pending_flips, grid_config, inventory_zone) -> list[DesiredOrder]`
 **Design doc:** Section 7.6
@@ -235,7 +235,7 @@ Subtasks:
 - Hard cap converts exposure-increasing flips to reduce-only.
 - Empty pending flips list produces no changes.
 
-### 1.9 Main entry point
+### 1.9 Main entry point [DONE]
 
 **Method:** `compute_desired_orders(state) -> list[DesiredOrder]`
 **Design doc:** Sections 7.1, 3.3 step 5a
