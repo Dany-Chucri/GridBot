@@ -1058,7 +1058,7 @@ This catches subtle drift from missed fills, rounding differences, or funding pa
 leverage: 2.0
 levels_per_side: 25
 grid_step_bps: 15-25      # dynamically adjusted (see spacing formula)
-capital_allocation: 0.60   # 60% of total risk budget
+capital_allocation: 0.70   # 70% of total risk budget
 
 # === Expansion Grid ===
 expansion_levels_per_side: 15

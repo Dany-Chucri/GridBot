@@ -42,7 +42,7 @@ class AssetConfig:
     levels_per_side: int = 25
     grid_step_bps_min: float = 15.0
     grid_step_bps_max: float = 25.0
-    capital_allocation: float = 0.60
+    capital_allocation: float = 0.70
 
     # Expansion Grid
     expansion_levels_per_side: int = 15
