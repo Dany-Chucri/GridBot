@@ -14,6 +14,7 @@ Hyperliquid perpetual futures grid trading bot (BTC-PERP, ETH-PERP). Python. Des
 ## What Not To Do
 
 - **Don't perform pass-by refactors.** All changes should be clear, deliberate, and relevant to the prompt.
+- **Don't derive values/metrics that will be directly accessible but have yet to be implemented**. For example, do not interpolate a mid_price value in a phase 1 implementation just because we have yet to fetch market data in a later phase.
 - **Don't invent safety mechanisms not in the design.** The risk model is carefully layered. Adding ad-hoc guards creates interaction bugs. If you think something is missing, flag it.
 - **Don't use REST polling as the primary state path.** WS `orderUpdates` is primary; REST is the backup consistency check. Swapping this creates 2-10s blind spots.
 - **Don't flatten on graceful shutdown.** Cancel orders, persist state, exit. Flattening wastes taker fees on planned restarts.
