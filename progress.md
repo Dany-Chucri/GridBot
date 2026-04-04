@@ -1,5 +1,30 @@
 # Progress Log
 
+## 2026-04-04 — Phase 3: StateStore (SQLite persistence)
+
+**Goal:** Implement the StateStore module — SQLite-backed persistence for crash recovery and analytics.
+
+**Changes:**
+- Implemented full StateStore with all CRUD operations: grid_config, position, open_orders, fills, regime, pending_flips, bot_state, heartbeat
+- Schema with 9 tables matching design doc section 4.4, WAL journal mode for crash safety
+- Schema versioning via `schema_version` table with sequential migration support
+- Bulk replace semantics for open_orders and pending_flips (delete-all-for-symbol then insert batch)
+- Append-only fills ledger with `since_ms` filter support
+- AssetState JSON serialization/deserialization with full enum and nested object support
+- 52 tests at 96% coverage — round-trip, bulk replace, symbol isolation, WAL concurrency, enum serialization
+
+**Files modified:**
+- `gridbot/state_store.py` — Full implementation replacing all NotImplementedError stubs
+- `docs/plans/implementation-plan.md` — Phase 3 marked [DONE] (all subheaders)
+- `REPO_MAP.md` — Added test_state_store.py entry
+
+**Files added:**
+- `tests/test_state_store.py` — 52-test suite covering all StateStore operations
+
+**Status:** Complete
+
+---
+
 ## 2026-04-04 — Phase 2 review fix: vol recovery timer gap
 
 **Goal:** Fix bug where vol recovery timer allowed one cycle of grid activity before pausing.

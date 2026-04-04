@@ -14,7 +14,7 @@ Eight phases, ordered by dependency. Each phase produces a testable increment. P
 Phase 0: Foundation              [DONE]
 Phase 1: GridEngine              [DONE]
 Phase 2: RiskManager             [DONE]
-Phase 3: StateStore              [SQLite, no exchange]
+Phase 3: StateStore              [DONE]
 Phase 4: MarketData              [WS + REST connectivity]
 Phase 5: PnLMonitor              [analytics, cross-check]
 Phase 6: OrderManager            [exchange order ops]
@@ -523,13 +523,13 @@ First non-None result wins (most severe check runs first).
 
 ---
 
-## Phase 3: StateStore
+## Phase 3: StateStore [DONE]
 
 **File:** `gridbot/state_store.py`
 **Dependencies:** None (uses only types and aiosqlite)
 **Design doc:** Sections 4.4, 7.6
 
-### 3.1 Schema design
+### 3.1 Schema design [DONE]
 
 Create tables:
 
@@ -550,7 +550,7 @@ Subtasks:
 - Ensure `data/` directory is created if missing.
 - **Schema versioning:** The `schema_version` table tracks the current schema version. On `initialize()`, check the current version and apply any pending migrations sequentially. Migrations are simple Python functions (`_migrate_v1_to_v2`, etc.) that run `ALTER TABLE` / `CREATE TABLE` statements inside a transaction. Start at version 1. This avoids manual database wipes when the schema evolves between phases.
 
-### 3.2 CRUD operations
+### 3.2 CRUD operations [DONE]
 
 Implement all load/save methods. Each save is a single transaction (`INSERT OR REPLACE`). Each load is a simple `SELECT`.
 
@@ -564,7 +564,7 @@ Methods to implement:
 - `save_bot_state` / `load_bot_state` — serialize `AssetState` to JSON.
 - `update_heartbeat` / `get_last_heartbeat`
 
-### 3.3 Close
+### 3.3 Close [DONE]
 
 Implement `close()` — commit any pending transaction, close connection.
 
