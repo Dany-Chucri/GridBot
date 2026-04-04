@@ -13,7 +13,7 @@ Eight phases, ordered by dependency. Each phase produces a testable increment. P
 ```
 Phase 0: Foundation              [DONE]
 Phase 1: GridEngine              [DONE]
-Phase 2: RiskManager             [pure logic, no I/O]
+Phase 2: RiskManager             [DONE]
 Phase 3: StateStore              [SQLite, no exchange]
 Phase 4: MarketData              [WS + REST connectivity]
 Phase 5: PnLMonitor              [analytics, cross-check]
@@ -271,7 +271,7 @@ Orchestrates all sub-methods:
 
 ---
 
-## Phase 2: RiskManager
+## Phase 2: RiskManager [DONE]
 
 **File:** `gridbot/risk_manager.py`
 **Dependencies:** None (uses only types and config)
@@ -279,7 +279,7 @@ Orchestrates all sub-methods:
 
 Like GridEngine, RiskManager is pure logic — it evaluates state and returns decisions. No I/O.
 
-### 2.1 Regime detection
+### 2.1 Regime detection [DONE]
 
 **Method:** `detect_regime(symbol, mid_price, vol_metrics, moving_avg, last_breakout_ms, now_ms, config) -> Regime`
 **Design doc:** Sections 8.1-8.2
@@ -317,7 +317,7 @@ The `_vol_history_sufficient(symbol) -> bool` helper exposes whether the minimum
 - Bootstrap bias: same vol reading returns RANGE with 7d history but HIGH_VOL with 48h history (tighter threshold applies).
 - Threshold tightening scales linearly from bootstrap to steady-state (at 48h the bias is maximal, at 7d it's zero).
 
-### 2.2 Breakout detection
+### 2.2 Breakout detection [DONE]
 
 **Method:** `_check_breakout(mid_price, anchor, atr, vol_metrics, config) -> RiskDecision | None`
 **Design doc:** Section 6.3
@@ -335,7 +335,7 @@ Returns `RiskDecision(CANCEL_AND_FLATTEN, ...)` if triggered, `None` if clear.
 - Triggers on vol spike.
 - Does not trigger when all metrics are within bounds.
 
-### 2.3 Volatility circuit breakers
+### 2.3 Volatility circuit breakers [DONE]
 
 **Method:** `_check_volatility(symbol, vol_metrics, config) -> RiskDecision | None`
 **Design doc:** Section 6.4
@@ -356,7 +356,7 @@ Subtasks:
 - Kill threshold returns CANCEL_AND_FLATTEN.
 - Recovery timer prevents premature resume.
 
-### 2.4 Funding rate checks
+### 2.4 Funding rate checks [DONE]
 
 **Method:** `_check_funding(funding_rate, position, config) -> RiskDecision | None`
 **Design doc:** Section 6.5
@@ -371,7 +371,7 @@ Two tiers:
 - Extreme funding with right-side position (receiving): SKEW_FUNDING (not pause).
 - Below moderate: None.
 
-### 2.5 Inventory cap enforcement
+### 2.5 Inventory cap enforcement [DONE]
 
 **Method:** `_check_inventory(position, config) -> RiskDecision | None`
 **Design doc:** Section 6.2
@@ -386,7 +386,7 @@ Two tiers:
 - Normal returns None.
 - Zero position returns None.
 
-### 2.6 Drawdown checks
+### 2.6 Drawdown checks [DONE]
 
 **Method:** `_check_drawdown(symbol, current_equity) -> RiskDecision | None`
 **Design doc:** Section 6.6
@@ -408,7 +408,7 @@ Subtasks:
 - Rolling window correctly excludes old entries.
 - Peak equity is correctly computed within the window.
 
-### 2.7 Momentum micro-filter
+### 2.7 Momentum micro-filter [DONE]
 
 **Method:** `_check_momentum(vol_metrics) -> RiskDecision | None`
 **Design doc:** Section 8.3
@@ -424,7 +424,7 @@ Returns `SUPPRESS_NEW_ENTRIES` if triggered.
 - Triggered by large 1m return.
 - Not triggered when both are small.
 
-### 2.8 Error and desync tracking
+### 2.8 Error and desync tracking [DONE]
 
 **Method:** `_check_errors() -> RiskDecision | None`
 **Design doc:** Section 6.6
@@ -440,7 +440,7 @@ Maintenance errors do NOT count (already handled in `record_error`).
 - Maintenance errors don't increment counter.
 - `clear_errors` resets counter.
 
-### 2.9 Portfolio delta cap
+### 2.9 Portfolio delta cap [DONE]
 
 **Method:** `check_portfolio_delta(positions) -> bool`
 **Design doc:** Section 9.2
@@ -459,7 +459,7 @@ Returns `True` if cap breached. The Supervisor uses this to tighten individual c
 - Opposite-side positions partially cancel.
 - Empty positions: no breach.
 
-### 2.10 Pre-flight checks
+### 2.10 Pre-flight checks [DONE]
 
 **Method:** `preflight_check(config, account_equity) -> list[str]`
 **Design doc:** Section 6.1
@@ -476,7 +476,7 @@ Returns a list of violation strings. Empty list = pass.
 - Insufficient liq buffer returns violation.
 - Worst-case loss exceeding drawdown limit returns violation.
 
-### 2.11 Flattenability constraint
+### 2.11 Flattenability constraint [DONE]
 
 **Method:** `compute_effective_hard_cap(config, current_spread_bps, recent_avg_depth) -> float`
 **Design doc:** Section 5.7
@@ -492,7 +492,7 @@ effective_hard_cap = min(hard_cap, max_flattenable)
 - Wide spread reduces flattenable position.
 - Negative remaining budget (spread > slippage limit): effective cap goes to zero or minimum.
 
-### 2.12 Main evaluate method
+### 2.12 Main evaluate method [DONE]
 
 **Method:** `evaluate(state) -> RiskDecision`
 **Design doc:** Section 3.3 step 3

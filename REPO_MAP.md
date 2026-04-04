@@ -34,6 +34,6 @@
 
 ## tests/
 - `test_config.py` — Configuration defaults and loading
-- `test_grid_engine.py` — Full GridEngine test suite (77 tests, 97% coverage)
-- `test_order_manager.py` — Order diff, flip logic, ALO rejection
-- `test_risk_manager.py` — Risk checks, regime detection, pre-flight
+- `test_grid_engine.py` — Full GridEngine test suite (80 tests, 97% coverage)
+- `test_order_manager.py` — Order diff, flip logic, ALO rejection (stubs)
+- `test_risk_manager.py` — Full RiskManager test suite (59 tests, 96% coverage)

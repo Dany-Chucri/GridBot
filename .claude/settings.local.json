@@ -4,7 +4,11 @@
       "WebSearch",
       "WebFetch(domain:hyperliquid.gitbook.io)",
       "Bash(pip install:*)",
-      "Bash(python -m pytest tests/test_grid_engine.py -v)"
+      "Bash(python -m pytest tests/test_grid_engine.py -v)",
+      "Bash(python -c \"from gridbot.risk_manager import RiskManager; print\\('Import OK'\\)\")",
+      "Bash(python -m pytest tests/test_risk_manager.py -v)",
+      "Bash(python -m pytest tests/test_risk_manager.py -v --tb=short)",
+      "Bash(python -m pytest tests/test_risk_manager.py --cov=gridbot.risk_manager --cov-report=term-missing)"
     ]
   }
 }

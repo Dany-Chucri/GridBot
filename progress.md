@@ -1,5 +1,55 @@
 # Progress Log
 
+## 2026-04-04 — Phase 2 review fix: vol recovery timer gap
+
+**Goal:** Fix bug where vol recovery timer allowed one cycle of grid activity before pausing.
+
+**Changes:**
+- Fixed `_check_volatility` to return `PAUSE_GRID` immediately when vol drops below pause (recovery timer start), instead of returning `None` for one cycle
+- Used 3-state tracking in `_vol_recovery_start`: key absent = never elevated (no recovery), value `None` = just dropped below pause (start timer), value = timestamp (recovery in progress)
+- Recovery state is cleaned up (`del`) when the recovery period elapses, so subsequent normal-vol calls don't re-enter recovery
+
+**Files modified:**
+- `gridbot/risk_manager.py` — Vol recovery timer fix in `_check_volatility`
+- `tests/test_risk_manager.py` — Updated test to expect `PAUSE_GRID` when recovery timer starts
+
+**Status:** Complete
+
+**Notes:** KILL action for drawdown confirmed correct — design doc section 3.3 step 4 says Supervisor interprets risk decisions and handles cancel/flatten/cooldown sequences. RiskManager returns the decision; Supervisor executes it.
+
+---
+
+## 2026-04-03 — Phase 2: RiskManager implementation
+
+**Goal:** Implement all RiskManager methods per implementation plan Phase 2, with comprehensive tests.
+
+**Changes:**
+- Implemented regime detection with 3-signal gate (vol percentile, trend distance, cooldown), vol history bootstrap (48h min → 7d steady-state), and linear threshold tightening during bootstrap period
+- Implemented breakout detection: distance, 5m return, and vol spike triggers all return CANCEL_AND_FLATTEN
+- Implemented volatility circuit breakers with pause/kill thresholds and per-asset recovery timer
+- Implemented two-tier funding rate checks: moderate → SKEW_FUNDING, extreme + wrong-side → PAUSE_GRID
+- Implemented inventory cap enforcement: soft cap → SKEW_INVENTORY, hard cap → REDUCE_ONLY
+- Implemented rolling 24h/168h drawdown checks with account-level equity history
+- Implemented momentum micro-filter using ATR/price-relative thresholds for 1m and 5m returns
+- Implemented error/desync tracking with maintenance error exclusion
+- Implemented portfolio delta cap using mark price (derived from avg_entry + unrealized_pnl/size)
+- Implemented pre-flight checks: liq buffer, worst-case loss, and flattenability validation
+- Implemented flattenability constraint: dynamic hard cap from spread + depth
+- Implemented main evaluate() method with severity-ordered check chain
+- Added `funding_rate`, `moving_avg`, `last_breakout_ms` fields to AssetState
+- Added `record_vol()`, `record_equity()`, `record_desync()`, `clear_desync()` helper methods
+
+**Files modified:**
+- `gridbot/risk_manager.py` — Full implementation of all 12 sub-sections
+- `gridbot/types.py` — Added funding_rate, moving_avg, last_breakout_ms to AssetState
+- `tests/test_risk_manager.py` — 59 tests across 10 test classes, 96% coverage
+
+**Status:** Complete
+
+**Notes:** `check_portfolio_delta` accepts `account_equity` as a parameter (added to stub signature with default=0.0) since the design doc formula requires it. The `_check_momentum` method also takes `mid_price` (not in original stub) since ATR/price thresholds need it. Equity history is a flat list (account-level), not per-symbol, since there's one shared account.
+
+---
+
 ## 2026-04-03 — Phase 1 review fixes
 
 **Goal:** Fix issues found during Phase 1 code review.

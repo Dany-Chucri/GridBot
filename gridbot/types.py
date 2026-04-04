@@ -163,6 +163,9 @@ class AssetState:
     pending_flips: list[PendingFlip] = field(default_factory=list)
     cooldown_until_ms: int | None = None
     account_equity: float = 0.0
+    funding_rate: float = 0.0
+    moving_avg: float = 0.0
+    last_breakout_ms: int | None = None
     stagger_placed_count: int = 0
     drift_start_ms: int | None = None
     anchor_epoch: int = 0
