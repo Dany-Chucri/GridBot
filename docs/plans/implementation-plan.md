@@ -855,6 +855,7 @@ This is a state machine. Implement the full protocol:
 **Method:** `_send_flatten_ioc(symbol, side, size, limit_price)`
 - Build IOC order with `reduce_only=True`.
 - Submit as single order (not batch — flatten is urgent).
+**Note — fill price accuracy for IOC orders:** The `orderUpdates` WS channel only provides `limitPx` (the order's limit price), not the actual execution price. For ALO grid orders this is fine (fill price == limit price by definition), but IOC flatten fills can execute at worse prices. To get accurate fill prices, fees, and maker/taker status for flatten fills, MarketData should subscribe to the `userFills` WS channel (`{"type": "userFills", "user": "<address>"}`), which provides `px` (execution price), `fee`, and `crossed` (true = taker). The `oid` field joins back to `orderUpdates`. The flatten retry loop already re-queries position via REST for remaining size, but `userFills` is needed for accurate PnL attribution and slippage measurement on taker fills.
 
 ### 6.8 Cancel all
 
