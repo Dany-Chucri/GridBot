@@ -1,4 +1,77 @@
 # Progress Log
+## 2026-04-07 — Phase 4 fix: extract funding rate from activeAssetCtx
+
+**Goal:** Fix missing funding rate extraction from the WS `activeAssetCtx` channel.
+
+**Changes:**
+- `_dispatch_asset_ctx` now extracts the `funding` field alongside `markPx` and stores it in `_funding_rates[symbol]`
+- Added `get_funding_rate(symbol)` public getter, parallel to `get_mark_price`
+- Added `_funding_rates` dict to `__init__`
+- 4 new tests: stores funding rate, default zero, missing funding preserves old value, funding without mark price
+
+**Files modified:**
+- `gridbot/market_data.py` — funding rate extraction and getter
+- `tests/test_market_data.py` — 4 new tests (93 → 97)
+
+**Status:** Complete
+
+**Notes:** The Supervisor (Phase 7) will read `get_funding_rate()` to populate `AssetState.funding_rate` before passing to RiskManager's `_check_funding`.
+
+---
+
+## 2026-04-06 — Phase 4 bug fixes: partial fills, book depth, maker/taker
+
+**Goal:** Fix three issues found during phase 4 review.
+
+**Changes:**
+- Partial fills now emit a `Fill` with `is_partial=True` so PnLMonitor can track realized PnL from partial fills (previously lost). Full fills continue to emit `is_partial=False` for the remaining quantity, which is what triggers grid flips.
+- `fetch_book_depth` now accepts `side: OrderSide | None` — `SELL` sums bid-side depth (you sell into bids), `BUY` sums ask-side depth (you buy from asks), `None` sums both (previous behavior, backward compatible).
+- `is_maker` is no longer hardcoded `True`. Determined from the order's `tif` field: IOC → taker, everything else → maker. Fee calculation uses `_TAKER_FEE_RATE` (0.05%) for taker fills instead of always using `_MAKER_FEE_RATE` (0.02%).
+- Added `is_partial` field to `Fill` dataclass and `fills` table schema in StateStore.
+
+**Files modified:**
+- `gridbot/types.py` — added `is_partial: bool = False` to `Fill`
+- `gridbot/market_data.py` — partial fill emission, `tif`-based maker/taker detection, taker fee rate constant, `fetch_book_depth` side parameter
+- `gridbot/state_store.py` — `is_partial` column in fills table, updated INSERT/SELECT
+- `tests/test_market_data.py` — updated partial fill tests, added maker/taker tests, added book depth side-filtering tests (93 → 93 tests, 10 modified/added)
+
+**Status:** Complete
+
+**Notes:** `limitPx` in `orderUpdates` is the order's limit price, not the fill execution price. For ALO (maker) orders this is correct since fill price == limit price by definition. For IOC (taker) fills during flatten, the actual execution price may differ — phase 6 (OrderManager) should subscribe to `userFills` WS channel which provides the real `px`, `fee`, and `crossed` (maker/taker) per fill.
+
+---
+
+## 2026-04-05 — Phase 4: MarketData (WS + REST connectivity)
+
+**Goal:** Implement the MarketData module — real-time market view via Hyperliquid WS subscriptions and REST fallback.
+
+**Changes:**
+- Implemented full MarketData with WS→async bridge: SDK WS callbacks enqueue to asyncio queue, background task dispatches to typed handlers
+- WS subscriptions: l2Book (bid/ask/mid), trades (vol buffers), allMids (fallback), activeAssetCtx (mark price), orderUpdates (fill detection)
+- Price update handling: stores bid/ask/mid from l2Book, falls back to allMids when l2 is stale (>10s)
+- Trade stream processing: return buffers with (timestamp, price) tuples, 1-minute OHLCV candle aggregation with automatic rollover
+- Vol metrics computation: realized vol (log returns resampled at 5s intervals, annualized), ATR proxy (true range from minute candles), spread bps, rolling 1m/5m returns, conservative defaults when insufficient data
+- Order update handling: tracks orders by oid, detects full fills (returns Fill), tracks partial fills, cleans up on cancel/reject
+- REST backup fetches: fetch_open_orders (frontend_open_orders for reduceOnly), fetch_position, fetch_exchange_pnl, fetch_book_depth (L2 snapshot depth sum)
+- Mark price via activeAssetCtx WS subscription
+- Reconnection with exponential backoff (1s→60s max), health monitor task
+- Added wallet_address and base_url to BotConfig for SDK initialization
+- 83 tests at 72% coverage — core logic (metrics, handlers, REST, dispatch) fully tested; uncovered lines are WS lifecycle/networking
+
+**Files modified:**
+- `gridbot/market_data.py` — Full implementation replacing all NotImplementedError stubs
+- `gridbot/config.py` — Added wallet_address field, base_url property, MAINNET_BASE/TESTNET_BASE constants
+- `docs/plans/implementation-plan.md` — Phase 4 marked [DONE] (all subheaders)
+- `REPO_MAP.md` — Added test_market_data.py entry
+
+**Files added:**
+- `tests/test_market_data.py` — 83-test suite covering all MarketData operations
+
+**Status:** Complete
+
+**Notes:** WS lifecycle code (connect/disconnect/reconnect) not unit-tested — requires live SDK or deep mocking. Manual testnet smoke test recommended per acceptance criteria.
+
+---
 
 ## 2026-04-04 — Phase 3: StateStore (SQLite persistence)
 

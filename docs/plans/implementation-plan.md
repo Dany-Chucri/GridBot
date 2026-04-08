@@ -15,8 +15,8 @@ Phase 0: Foundation              [DONE]
 Phase 1: GridEngine              [DONE]
 Phase 2: RiskManager             [DONE]
 Phase 3: StateStore              [DONE]
-Phase 4: MarketData              [WS + REST connectivity]
-Phase 5: PnLMonitor              [analytics, cross-check]
+Phase 4: MarketData              [DONE]
+Phase 5: PnLMonitor              [DONE]
 Phase 6: OrderManager            [exchange order ops]
 Phase 7: Supervisor              [orchestration, lifecycle]
 Phase 8: Integration & Testnet   [end-to-end validation]
@@ -584,7 +584,7 @@ Implement `close()` — commit any pending transaction, close connection.
 
 ---
 
-## Phase 4: MarketData
+## Phase 4: MarketData [DONE]
 
 **File:** `gridbot/market_data.py`
 **Dependencies:** Hyperliquid SDK, websockets, aiohttp
@@ -592,7 +592,7 @@ Implement `close()` — commit any pending transaction, close connection.
 
 This is the first module that talks to external systems. Tests will need either the testnet or a mock server.
 
-### 4.1 WS connection and price subscriptions
+### 4.1 WS connection and price subscriptions [DONE]
 
 **Methods:** `connect()`, `disconnect()`
 
@@ -605,7 +605,7 @@ Subtasks:
 - Set `_ws_connected` flag. Track `_last_ws_message_ms`.
 - **Fallback:** If `l2Book` subscription fails or data is stale, derive mid price from `allMids` and estimate spread from recent trade data or use a conservative default. This is a last resort — `l2Book` is the primary path.
 
-### 4.2 Price update handling
+### 4.2 Price update handling [DONE]
 
 **Method:** `_handle_price_update(symbol, bid, ask)`
 
@@ -615,7 +615,7 @@ Subtasks:
 - Store `_mid_prices[symbol]`, `_best_bid[symbol]`, `_best_ask[symbol]`.
 - Compute spread in bps: `(ask - bid) / mid * 10000`.
 
-### 4.3 Trade stream processing
+### 4.3 Trade stream processing [DONE]
 
 **Method:** `_handle_trade(symbol, price, size, timestamp_ms)`
 
@@ -624,7 +624,7 @@ Subtasks:
 - Aggregate into 1-minute candles in `_minute_candles[symbol]` (OHLCV, deque with maxlen for ~7 days).
 - These buffers feed `compute_vol_metrics`.
 
-### 4.4 Vol metrics computation
+### 4.4 Vol metrics computation [DONE]
 
 **Method:** `compute_vol_metrics(symbol) -> VolMetrics`
 **Design doc:** Section 4.2
@@ -636,7 +636,7 @@ Subtasks:
 - **Rolling returns:** 1m and 5m price changes from the return buffer.
 - Handle insufficient data: return conservative defaults (high vol, wide spread) when buffer is thin. This causes the bot to be cautious on startup.
 
-### 4.5 Order update handling (primary fill path)
+### 4.5 Order update handling (primary fill path) [DONE]
 
 **Method:** `_handle_order_update(raw) -> Fill | None`
 **Design doc:** Section 4.3
@@ -647,7 +647,7 @@ Parse the WS `orderUpdates` message:
 - Construct and return a `Fill` object on full fill. On partial, update remaining quantity in local tracking.
 - Acquire `_lock` before modifying shared state (serialization with REST path).
 
-### 4.6 REST backup fetches
+### 4.6 REST backup fetches [DONE]
 
 **Methods:** `fetch_open_orders(symbol)`, `fetch_position(symbol)`, `fetch_exchange_pnl(symbol)`, `fetch_book_depth(symbol, depth_bps)`
 
@@ -657,7 +657,7 @@ Subtasks:
 - Acquire `_lock` before modifying shared state from REST responses.
 - Handle API errors with logging (don't crash on a single failed REST call).
 
-### 4.7 Mark price
+### 4.7 Mark price [DONE]
 
 Either derive from WS (if available) or fetch via REST info endpoint. Store in `_mark_prices[symbol]`.
 

@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 # Endpoint configuration
 # ---------------------------------------------------------------------------
 
+MAINNET_BASE = "https://api.hyperliquid.xyz"
 MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
 MAINNET_REST_INFO = "https://api.hyperliquid.xyz/info"
 MAINNET_REST_EXCHANGE = "https://api.hyperliquid.xyz/exchange"
 
+TESTNET_BASE = "https://api.hyperliquid-testnet.xyz"
 TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
 TESTNET_REST_INFO = "https://api.hyperliquid-testnet.xyz/info"
 TESTNET_REST_EXCHANGE = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -141,9 +143,14 @@ class OperationalConfig:
 @dataclass
 class BotConfig:
     testnet: bool = False
+    wallet_address: str = ""
     assets: list[AssetConfig] = field(default_factory=lambda: [AssetConfig(), default_eth_config()])
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     operational: OperationalConfig = field(default_factory=OperationalConfig)
+
+    @property
+    def base_url(self) -> str:
+        return TESTNET_BASE if self.testnet else MAINNET_BASE
 
     @property
     def ws_url(self) -> str:
@@ -186,6 +193,9 @@ def _apply_overrides(config: BotConfig, raw: dict) -> None:
     """
     if "testnet" in raw:
         config.testnet = bool(raw["testnet"])
+
+    if "wallet_address" in raw:
+        config.wallet_address = str(raw["wallet_address"])
 
     if "portfolio" in raw:
         for k, v in raw["portfolio"].items():

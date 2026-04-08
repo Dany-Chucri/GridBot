@@ -106,6 +106,7 @@ class Fill:
     fee: float
     timestamp_ms: int
     is_maker: bool
+    is_partial: bool = False
 
 
 @dataclass

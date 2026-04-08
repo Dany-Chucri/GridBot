@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS fills (
     side TEXT NOT NULL,
     fee REAL NOT NULL,
     timestamp_ms INTEGER NOT NULL,
-    is_maker INTEGER NOT NULL
+    is_maker INTEGER NOT NULL,
+    is_partial INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS regime (
@@ -419,8 +420,8 @@ class StateStore:
     async def record_fill(self, fill: Fill) -> None:
         await self._conn.execute(
             """INSERT OR REPLACE INTO fills
-               (fill_id, order_id, client_order_id, symbol, price, size, side, fee, timestamp_ms, is_maker)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (fill_id, order_id, client_order_id, symbol, price, size, side, fee, timestamp_ms, is_maker, is_partial)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 fill.fill_id,
                 fill.order_id,
@@ -432,6 +433,7 @@ class StateStore:
                 fill.fee,
                 fill.timestamp_ms,
                 int(fill.is_maker),
+                int(fill.is_partial),
             ),
         )
         await self._conn.commit()
@@ -460,6 +462,7 @@ class StateStore:
                 fee=row["fee"],
                 timestamp_ms=row["timestamp_ms"],
                 is_maker=bool(row["is_maker"]),
+                is_partial=bool(row["is_partial"]),
             )
             for row in rows
         ]
