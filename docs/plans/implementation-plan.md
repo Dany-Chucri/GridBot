@@ -678,13 +678,13 @@ Either derive from WS (if available) or fetch via REST info endpoint. Store in `
 
 ---
 
-## Phase 5: PnLMonitor
+## Phase 5: PnLMonitor [DONE]
 
 **File:** `gridbot/pnl_monitor.py`
 **Dependencies:** Types only (exchange data provided by callers)
 **Design doc:** Sections 10.6, 6.6
 
-### 5.1 Fill processing
+### 5.1 Fill processing [DONE]
 
 **Method:** `record_fill(fill)`
 
@@ -697,13 +697,13 @@ The PnL computation for each fill (average-cost method):
 - If fill reduces position (sell when long, buy when short): `pnl = (fill.price - avg_entry) * fill.size` (adjusted for side). `avg_entry` stays unchanged.
 - If fill flips position (e.g., short 5 → long 2): realize PnL on the closing portion, then set `avg_entry = fill.price` for the new direction.
 
-### 5.2 Funding tracking
+### 5.2 Funding tracking [DONE]
 
 **Method:** `record_funding_payment(symbol, amount)`
 
 Add to `_funding_payments[symbol]` running total.
 
-### 5.3 Exchange cross-check
+### 5.3 Exchange cross-check [DONE]
 
 **Method:** `crosscheck(symbol, exchange_pnl, now_ms) -> bool`
 **Design doc:** Section 10.6
@@ -713,7 +713,7 @@ Subtasks:
 - If `abs(diff) > _divergence_threshold`: set `_pnl_diverged[symbol] = True`, log warning, return `True`.
 - Rate-limit: only run if `now_ms - _last_crosscheck_ms[symbol] >= _crosscheck_interval_s * 1000`.
 
-### 5.4 Total PnL computation
+### 5.4 Total PnL computation [DONE]
 
 **Method:** `compute_total_pnl(symbol, position) -> float`
 
@@ -855,6 +855,7 @@ This is a state machine. Implement the full protocol:
 **Method:** `_send_flatten_ioc(symbol, side, size, limit_price)`
 - Build IOC order with `reduce_only=True`.
 - Submit as single order (not batch — flatten is urgent).
+
 **Note — fill price accuracy for IOC orders:** The `orderUpdates` WS channel only provides `limitPx` (the order's limit price), not the actual execution price. For ALO grid orders this is fine (fill price == limit price by definition), but IOC flatten fills can execute at worse prices. To get accurate fill prices, fees, and maker/taker status for flatten fills, MarketData should subscribe to the `userFills` WS channel (`{"type": "userFills", "user": "<address>"}`), which provides `px` (execution price), `fee`, and `crossed` (true = taker). The `oid` field joins back to `orderUpdates`. The flatten retry loop already re-queries position via REST for remaining size, but `userFills` is needed for accurate PnL attribution and slippage measurement on taker fills.
 
 ### 6.8 Cancel all

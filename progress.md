@@ -1,4 +1,31 @@
 # Progress Log
+
+## 2026-04-07 — Phase 5: PnLMonitor (analytics and cross-check)
+
+**Goal:** Implement the PnLMonitor module — local PnL tracking, funding accumulation, exchange cross-check, and total PnL computation.
+
+**Changes:**
+- Implemented `record_fill` with average-cost PnL method: handles opening, increasing, reducing, and flipping positions with correct realized PnL attribution
+- Implemented `record_funding_payment` as a per-symbol running total accumulator
+- Implemented `crosscheck` with rate limiting (first call always runs, subsequent gated by interval) and divergence detection that clears when back in range
+- Implemented `compute_total_pnl` summing realized + unrealized + funding, using exchange-reported unrealized from Position
+- Added internal `_position_size` and `_avg_entry` tracking dicts for average-cost accounting
+- 28 tests at 100% coverage — fill PnL (long/short/partial/flip), funding accumulation, cross-check divergence/rate-limiting, total PnL components
+
+**Files modified:**
+- `gridbot/pnl_monitor.py` — Full implementation replacing all NotImplementedError stubs
+- `docs/plans/implementation-plan.md` — Phase 5 and all subheaders marked [DONE]
+- `REPO_MAP.md` — Added test_pnl_monitor.py entry
+
+**Files added:**
+- `tests/test_pnl_monitor.py` — 28-test suite covering all PnLMonitor operations
+
+**Status:** Complete
+
+**Notes:** No exchange calls — all data passed in by callers per design. The `crosscheck` method is async to match the stub signature (Supervisor will call it from its async loop). The `_same_sign` helper is a module-level function since it's pure utility.
+
+---
+
 ## 2026-04-07 — Phase 4 fix: extract funding rate from activeAssetCtx
 
 **Goal:** Fix missing funding rate extraction from the WS `activeAssetCtx` channel.
