@@ -17,7 +17,7 @@ Phase 2: RiskManager             [DONE]
 Phase 3: StateStore              [DONE]
 Phase 4: MarketData              [DONE]
 Phase 5: PnLMonitor              [DONE]
-Phase 6: OrderManager            [exchange order ops]
+Phase 6: OrderManager            [DONE]
 Phase 7: Supervisor              [orchestration, lifecycle]
 Phase 8: Integration & Testnet   [end-to-end validation]
 ```
@@ -747,7 +747,7 @@ If diverged, use exchange-reported unrealized.
 
 This is the most exchange-coupled module. It makes real orders.
 
-### 6.1 SDK client initialization
+### 6.1 SDK client initialization [DONE]
 
 **Method:** `initialize()`
 
@@ -756,7 +756,7 @@ Subtasks:
 - Validate connectivity with a simple info query (e.g., fetch account state).
 - Store client reference.
 
-### 6.2 Diff computation
+### 6.2 Diff computation [DONE]
 
 **Method:** `_compute_diff(desired, current) -> (to_cancel, to_place)`
 **Design doc:** Section 7.2
@@ -774,7 +774,7 @@ Subtasks:
 - Changed size → cancel old, place new.
 - Mixed scenario with cancels, places, and no-ops.
 
-### 6.3 Batch submission
+### 6.3 Batch submission [DONE]
 
 **Method:** `_submit_batch(cancels, placements)`
 **Design doc:** Section 2.3
@@ -793,7 +793,7 @@ Subtasks:
   - For cancel failures: log and flag for immediate REST reconciliation to determine actual order state.
 - Log the batch: count of cancels, placements, successes, and failures.
 
-### 6.4 ALO rejection handling
+### 6.4 ALO rejection handling [DONE]
 
 **Method:** `_handle_alo_rejection(order, mid_price, attempt) -> DesiredOrder | None`
 **Design doc:** Section 7.4
@@ -804,7 +804,7 @@ Subtasks:
 - Return adjusted order or `None` if exhausted.
 - Track rejection count per cycle for alerting (>5/min → warning).
 
-### 6.5 Fill handling and flip orders
+### 6.5 Fill handling and flip orders [DONE]
 
 **Method:** `compute_flip_order(fill, step_bps, inventory_zone_is_hard_cap) -> DesiredOrder | None`
 **Design doc:** Section 7.5
@@ -821,7 +821,7 @@ Subtasks:
 - Hard cap sets reduce_only.
 - Correct client order ID.
 
-### 6.6 Backstop stop-loss management
+### 6.6 Backstop stop-loss management [DONE]
 
 **Method:** `update_backstop(symbol, position, anchor, atr, breakout_atr_distance, backstop_buffer_atr)`
 **Design doc:** Section 6.8
@@ -833,7 +833,7 @@ Subtasks:
 - Cancel existing backstop (by deterministic client order ID) and place new one in the same batch.
 - Generate deterministic ID: `hash("backstop", symbol, direction, config_hash)`.
 
-### 6.7 Emergency flatten protocol
+### 6.7 Emergency flatten protocol [DONE]
 
 **Method:** `execute_flatten(symbol, position, config, get_mid_price, get_book_depth, get_position) -> bool`
 **Design doc:** Section 6.7
@@ -858,7 +858,7 @@ This is a state machine. Implement the full protocol:
 
 **Note — fill price accuracy for IOC orders:** The `orderUpdates` WS channel only provides `limitPx` (the order's limit price), not the actual execution price. For ALO grid orders this is fine (fill price == limit price by definition), but IOC flatten fills can execute at worse prices. To get accurate fill prices, fees, and maker/taker status for flatten fills, MarketData should subscribe to the `userFills` WS channel (`{"type": "userFills", "user": "<address>"}`), which provides `px` (execution price), `fee`, and `crossed` (true = taker). The `oid` field joins back to `orderUpdates`. The flatten retry loop already re-queries position via REST for remaining size, but `userFills` is needed for accurate PnL attribution and slippage measurement on taker fills.
 
-### 6.8 Cancel all
+### 6.8 Cancel all [DONE]
 
 **Method:** `cancel_all_orders(symbol)`
 - Fetch all open orders for symbol, submit batch cancel.

@@ -1,5 +1,89 @@
 # Progress Log
 
+## 2026-04-11 — Phase 6 second review fixes
+
+**Goal:** Fix 11 remaining issues found during second Phase 6 code review.
+
+**Changes:**
+- Fixed ALO retry loop: retries now iterate up to `post_only_max_retries` with incrementing attempt counter, parsing each retry result (was only retrying once, ignoring retry result)
+- Fixed flatten retry loop: transient `get_mid_price`/`get_position` errors now `continue` with a pause instead of `break`ing the loop, matching design doc 6.7's "retry until time budget" semantics
+- Added `_check_bulk_result` helper: `_send_flatten_ioc` and `update_backstop` now check exchange result status and only log success on actual success
+- Replaced hardcoded `_TICK_SIZE=0.1` with per-asset `tick_size` in `AssetConfig` (BTC=1.0, ETH=0.01), used in `_handle_alo_rejection`
+- Fixed `_cancel_existing_backstop` to filter by deterministic cloid instead of broad `isTrigger+reduceOnly` filter — won't cancel unrelated trigger orders
+- Added `reconcile_with_backstop` method that integrates backstop cancel/place into the same batch as grid reconciliation, minimizing the unprotected window
+- Replaced fragile `"alo" in s_str.lower()` substring check with structured `_is_alo_rejection` and `_is_order_success` methods
+- Made `mid_price` required in `reconcile()` (removed default=0.0), added warning log when mid_price <= 0 would suppress ALO retries
+- Flatten retry loop now refreshes `tranche_size` from book depth between iterations
+- Replaced `1e-9` absolute tolerance in `_compute_diff` with `math.isclose(rel_tol=1e-6)` to handle float round-trips
+- Extracted `_build_place_request` helper to DRY up placement dict construction
+
+**Files modified:**
+- `gridbot/order_manager.py` — All fixes above
+- `gridbot/config.py` — Added `tick_size` field to `AssetConfig` (BTC=1.0, ETH=0.01)
+- `tests/test_order_manager.py` — 31 new tests across 10 new test classes (117 total, up from 86)
+- `REPO_MAP.md` — Updated test count
+- `progress.md` — This entry
+
+**Status:** Complete
+
+**Notes:** `reconcile_with_backstop` is available for Phase 7 Supervisor to use when it wants grid+backstop in a single batch. The standalone `update_backstop` still exists for cases where backstop is updated independently. The zero-position backstop cancel now iterates both "long" and "short" cloids to ensure cleanup.
+
+---
+
+## 2026-04-08 — Phase 6 review fixes
+
+**Goal:** Fix 7 issues found during Phase 6 code review.
+
+**Changes:**
+- Wired `_handle_alo_rejection` into `_parse_place_result` — ALO rejections now nudge price and retry via a second `bulk_orders` call (was detected but never acted on)
+- Fixed per-symbol config resolution: `_handle_alo_rejection` now uses `_get_asset_config(symbol)` instead of hardcoded `assets[0]`
+- Fixed `update_backstop` to accept `config_hash` from caller (GridEngine's config hash) instead of computing a local hash from anchor+ATR, per design doc section 6.8
+- Fixed `_compute_diff` duplicate-signature handling: `current_by_sig` now stores a list per signature so multiple orders at the same (price, side, size, reduce_only) can each be matched
+- Fixed `execute_flatten` argument order: `get_book_depth(symbol, max_slippage_bps, close_side)` now matches MarketData's `fetch_book_depth(symbol, depth_bps, side)` signature
+- Replaced all `asyncio.get_event_loop()` with `asyncio.get_running_loop()` (6 occurrences)
+- Added `mid_price` parameter to `reconcile()` and `_submit_batch()` for ALO retry context
+- 12 new tests covering all fixes (86 total, up from 74)
+
+**Files modified:**
+- `gridbot/order_manager.py` — All fixes above
+- `tests/test_order_manager.py` — 12 new tests across 5 new test classes
+- `progress.md` — This entry
+
+**Status:** Complete
+
+**Notes:** Issue #3 (backstop cancel-and-replace not batched) was intentional — the Hyperliquid SDK does not support atomic cancel+place in a single request. Cancels and placements are always separate `bulk_cancel()` / `bulk_orders()` API calls. The design doc says "included in the same batch operation as other order updates when possible" but the SDK constraint makes this impossible. This is consistent with the Phase 6 implementation note.
+
+---
+
+## 2026-04-08 — Phase 6: OrderManager (exchange order ops)
+
+**Goal:** Implement the OrderManager module — the only module that talks to the exchange for order operations. Includes diff computation, batch submission, ALO rejection handling, flip orders, backstop stop-losses, emergency flatten protocol, and cancel-all.
+
+**Changes:**
+- Implemented SDK client initialization with `eth_account` wallet and Hyperliquid SDK (`Exchange` + `Info` clients)
+- Implemented `_compute_diff()` — pure function that computes minimal (to_cancel, to_place) diff by matching on client_order_id or (price, side, size, reduce_only) signature
+- Implemented `_submit_batch()` — cancels first via `bulk_cancel()`, then places via `bulk_orders()`, with per-order result parsing and partial failure handling
+- Implemented `_handle_alo_rejection()` — nudges price one tick farther from mid, up to `post_only_max_retries`, with per-minute rejection rate alerting
+- Implemented `compute_flip_order()` — computes opposite-side flip at fill_price +/- step_bps, with reduce_only at hard cap, deterministic order ID from fill data
+- Implemented `update_backstop()` — maintains server-side trigger stop-loss (tpsl="sl", isMarket=True, reduce_only=True), cancel-and-replace on position change, removes at zero position
+- Implemented `execute_flatten()` — full state machine: depth assessment, chunked IOC tranches with bounded slippage, retry loop with time budget, slippage escalation (2x), dead state on failure
+- Implemented `cancel_all_orders()` — fetches open orders for symbol via REST, batch cancel
+- Deterministic client order IDs via SHA-256 hash of (symbol, price, side, config_hash, epoch)
+- 74 comprehensive tests covering pure functions and integration with mocked SDK
+
+**Files modified:**
+- `gridbot/order_manager.py` — Full implementation replacing all NotImplementedError stubs
+- `tests/test_order_manager.py` — 74 tests across 12 test classes
+- `docs/plans/implementation-plan.md` — Marked all Phase 6 subsections and header as [DONE]
+- `REPO_MAP.md` — Updated test description
+- `progress.md` — This entry
+
+**Status:** Complete
+
+**Notes:** The Hyperliquid SDK does not support atomic cancel+place in a single request — cancels and placements are separate `bulk_cancel()` / `bulk_orders()` API calls. Implementation cancels first to free order slots, then places. This is consistent with the implementation plan's note that "batch operations are not transactional."
+
+---
+
 ## 2026-04-07 — Phase 5: PnLMonitor (analytics and cross-check)
 
 **Goal:** Implement the PnLMonitor module — local PnL tracking, funding accumulation, exchange cross-check, and total PnL computation.

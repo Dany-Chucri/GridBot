@@ -16,7 +16,13 @@
       "Bash(python -m pytest tests/test_pnl_monitor.py -v)",
       "Bash(python -m pytest tests/test_pnl_monitor.py --cov=gridbot.pnl_monitor --cov-report=term-missing)",
       "Bash(python -m pytest tests/test_pnl_monitor.py -v --tb=short)",
-      "Bash(python -m pytest tests/test_pnl_monitor.py -q)"
+      "Bash(python -m pytest tests/test_pnl_monitor.py -q)",
+      "Bash(pip show:*)",
+      "Bash(python -m pytest tests/test_order_manager.py -v)",
+      "Bash(python -m pytest --tb=short -q)",
+      "Bash(python -m pytest tests/test_order_manager.py -v --tb=short)",
+      "Bash(python -m pytest tests/test_order_manager.py -x --tb=short)",
+      "Bash(python -c \"from gridbot.order_manager import OrderManager; print\\('Import OK'\\)\")"
     ]
   }
 }

@@ -79,6 +79,7 @@ class AssetConfig:
 
     # Order execution
     post_only_max_retries: int = 3
+    tick_size: float = 1.0  # USD — per-asset tick size for ALO price nudging
 
     # Dynamic slippage (section 5.7)
     base_slippage_bps: float = 1.5
@@ -107,6 +108,7 @@ def default_eth_config() -> AssetConfig:
         expansion_range_atr=3.5,
         breakout_atr_distance=4.0,
         max_flatten_slippage_bps=75.0,
+        tick_size=0.01,
     )
 
 
