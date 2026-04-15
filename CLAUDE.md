@@ -2,6 +2,8 @@
 
 Hyperliquid perpetual futures grid trading bot (BTC-PERP, ETH-PERP). Python. Design doc, **MUST READ**: `docs/design.md` IN ITS ENTIRETY. When referred to a specific planning document, be sure to read said plan in its entirety.
 
+When running tests, call commands that are already pre-approved. If necessary, call new commands only by making them generic enough for approval so that they cover future calls.
+
 ## Core Invariants — Do Not Violate
 
 - **Exchange is truth.** All risk decisions use exchange-reported state. Local state is a cache for speed, never for authority.
