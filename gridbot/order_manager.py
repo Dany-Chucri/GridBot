@@ -589,6 +589,28 @@ class OrderManager:
                 count,
             )
 
+    async def cancel_orders(
+        self, symbol: str, orders: list[OpenOrder]
+    ) -> None:
+        """Batch cancel a specific list of orders by oid."""
+        if not orders:
+            return
+        loop = asyncio.get_running_loop()
+        coin = self._to_coin(symbol)
+        cancel_requests = [
+            {"coin": coin, "oid": int(o.order_id)} for o in orders
+        ]
+        try:
+            result = await loop.run_in_executor(
+                None, self._client.bulk_cancel, cancel_requests
+            )
+            logger.info(
+                "Cancelled %d targeted orders for %s", len(cancel_requests), symbol
+            )
+            self._parse_cancel_result(result, orders)
+        except Exception:
+            logger.exception("cancel_orders failed for %s", symbol)
+
     async def cancel_all_orders(self, symbol: str) -> None:
         """Cancel all resting orders for an asset (batch cancel)."""
         loop = asyncio.get_running_loop()

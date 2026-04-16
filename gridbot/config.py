@@ -132,6 +132,7 @@ class PortfolioConfig:
 
 @dataclass
 class OperationalConfig:
+    cycle_interval_seconds: float = 1.0
     reconcile_interval_seconds: float = 5.0
     max_consecutive_errors: int = 10
     max_time_desynced_seconds: float = 30.0

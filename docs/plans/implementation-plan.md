@@ -878,13 +878,13 @@ This is a state machine. Implement the full protocol:
 
 ---
 
-## Phase 7: Supervisor
+## Phase 7: Supervisor [DONE]
 
 **File:** `gridbot/supervisor.py`
 **Dependencies:** All other modules
 **Design doc:** Sections 3.3, 4.4-4.5, 10.2-10.4
 
-### 7.1 Module initialization
+### 7.1 Module initialization [DONE]
 
 **Method:** `_initialize()`
 
@@ -895,7 +895,7 @@ Subtasks:
 - Wait for initial price data (first WS message) before proceeding.
 - Set up structured logging (JSON format, section 10.2).
 
-### 7.2 State recovery
+### 7.2 State recovery [DONE]
 
 **Method:** `_recover_state()`
 **Design doc:** Section 4.4
@@ -910,7 +910,7 @@ Subtasks:
 4. If persisted state shows `FLATTENING` and position is non-zero → resume flatten protocol.
 5. Update `_asset_states` with reconciled state.
 
-### 7.3 Pre-flight checks
+### 7.3 Pre-flight checks [DONE]
 
 **Method:** `_preflight_checks()`
 **Design doc:** Section 6.1
@@ -921,7 +921,7 @@ Subtasks:
 - If any violations: log them, refuse to start (exit with non-zero code).
 - This is a hard gate — no operator override allowed.
 
-### 7.4 Main event loop
+### 7.4 Main event loop [DONE]
 
 **Method:** `_main_loop()`
 **Design doc:** Section 3.3
@@ -944,7 +944,7 @@ while not self._shutdown_requested:
 
 Handle `BotState` transitions: RUNNING, COOLDOWN (wait for timer), FLATTENING (run flatten), MAINTENANCE (passive wait), DEAD (skip).
 
-### 7.5 Cycle execution
+### 7.5 Cycle execution [DONE]
 
 **Method:** `_run_cycle(symbol, asset_config)`
 **Design doc:** Section 3.3
@@ -1004,7 +1004,7 @@ if time_for_rest_reconciliation:
 logger.info(...)
 ```
 
-### 7.6 Risk action handling
+### 7.6 Risk action handling [DONE]
 
 **Method:** `_handle_risk_action(symbol, action, reason)`
 
@@ -1021,7 +1021,7 @@ Map each `RiskAction` to its operational response:
 | `CANCEL_AND_FLATTEN` | Cancel all orders, execute flatten if position exists, enter COOLDOWN |
 | `KILL` | Cancel all orders, flatten, enter DEAD state, send critical alert |
 
-### 7.7 REST reconciliation
+### 7.7 REST reconciliation [DONE]
 
 **Method:** `_rest_reconciliation(symbol)`
 **Design doc:** Section 4.3
@@ -1032,7 +1032,7 @@ Subtasks:
 - On discrepancy: log warning, adopt exchange state, trigger grid recompute next cycle.
 - Run on a timer (`reconcile_interval_seconds`), not every cycle if WS is healthy.
 
-### 7.8 Graceful shutdown
+### 7.8 Graceful shutdown [DONE]
 
 **Method:** `_shutdown()`
 **Design doc:** Section 4.5
@@ -1045,11 +1045,11 @@ Subtasks:
 6. Close StateStore.
 7. Log shutdown complete.
 
-### 7.9 Signal handling
+### 7.9 Signal handling [DONE]
 
 **In `main.py`:** Register `SIGTERM` and `SIGINT` handlers that call `supervisor.request_shutdown()`.
 
-### 7.10 Maintenance detection
+### 7.10 Maintenance detection [DONE]
 
 **Method:** `_handle_maintenance()`
 **Design doc:** Section 10.4
@@ -1061,14 +1061,14 @@ Subtasks:
 - Exponential backoff on reconnection (start 1s, max 60s).
 - On reconnect: full state reconciliation before resuming.
 
-### 7.11 Alerting
+### 7.11 Alerting [DONE]
 
 **Method:** `_send_alert(severity, message)`
 **Design doc:** Section 10.3
 
 Start with logging-based alerts (structured log at appropriate level). Add Telegram/Discord webhook support as a follow-up. The alert interface should be pluggable (callback or strategy pattern) so the transport is decoupled.
 
-### 7.12 Fill event processing
+### 7.12 Fill event processing [DONE]
 
 Wire up MarketData's fill detection to:
 - `PnLMonitor.record_fill(fill)`.

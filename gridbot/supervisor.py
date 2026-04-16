@@ -27,40 +27,84 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Awaitable, Callable
 
 from gridbot.config import AssetConfig, BotConfig
 from gridbot.grid_engine import GridEngine
 from gridbot.market_data import MarketData
 from gridbot.order_manager import OrderManager
 from gridbot.pnl_monitor import PnLMonitor
-from gridbot.risk_manager import RiskAction, RiskManager
+from gridbot.risk_manager import RiskAction, RiskDecision, RiskManager
 from gridbot.state_store import StateStore
-from gridbot.types import AssetState, BotState, Regime
+from gridbot.types import (
+    AssetState,
+    BotState,
+    Fill,
+    InventoryZone,
+    PendingFlip,
+    Position,
+    Regime,
+)
 
 logger = logging.getLogger(__name__)
+
+
+AlertCallback = Callable[[str, str], Awaitable[None]]
+
+_INITIAL_WS_TIMEOUT_S = 30.0
+_WS_STALE_MS = 10_000
+_BREAKOUT_DETAIL_TYPES = frozenset({"distance", "return_5m", "vol_spike"})
 
 
 class Supervisor:
     """Main orchestrator — coordinates all modules through the event loop."""
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(
+        self,
+        config: BotConfig,
+        *,
+        state_store: StateStore | None = None,
+        market_data: MarketData | None = None,
+        order_manager: OrderManager | None = None,
+        risk_manager: RiskManager | None = None,
+        pnl_monitor: PnLMonitor | None = None,
+        alert_callback: AlertCallback | None = None,
+    ) -> None:
         self._config = config
         self._shutdown_requested = False
 
-        # Module instances
-        self._market_data = MarketData(config)
-        self._state_store = StateStore()
-        self._order_manager = OrderManager(config)
-        self._risk_manager = RiskManager(config)
-        self._pnl_monitor = PnLMonitor(config)
+        # Module instances (allow injection for testing)
+        self._market_data = market_data or MarketData(config)
+        self._state_store = state_store or StateStore()
+        self._order_manager = order_manager or OrderManager(config)
+        self._risk_manager = risk_manager or RiskManager(config)
+        self._pnl_monitor = pnl_monitor or PnLMonitor(config)
 
         # Per-asset grid engines and state
         self._grid_engines: dict[str, GridEngine] = {}
         self._asset_states: dict[str, AssetState] = {}
 
         for asset_cfg in config.assets:
-            self._grid_engines[asset_cfg.symbol] = GridEngine(asset_cfg)
-            self._asset_states[asset_cfg.symbol] = AssetState(symbol=asset_cfg.symbol)
+            self._grid_engines[asset_cfg.symbol] = GridEngine(
+                asset_cfg, config.operational
+            )
+            self._asset_states[asset_cfg.symbol] = AssetState(
+                symbol=asset_cfg.symbol
+            )
+
+        # Per-asset timers for independent cadences
+        self._last_rest_reconcile_ms: dict[str, int] = {
+            ac.symbol: 0 for ac in config.assets
+        }
+        self._last_crosscheck_ms: dict[str, int] = {
+            ac.symbol: 0 for ac in config.assets
+        }
+
+        # Pluggable alert transport
+        self._alert_callback: AlertCallback | None = alert_callback
+
+        # Fill pump task
+        self._fill_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -81,61 +125,390 @@ class Supervisor:
         logger.info("Shutdown requested")
         self._shutdown_requested = True
 
+    def set_alert_callback(self, cb: AlertCallback) -> None:
+        """Install a pluggable alert transport (Telegram/Discord/etc)."""
+        self._alert_callback = cb
+
     # ------------------------------------------------------------------
     # Initialization & recovery
     # ------------------------------------------------------------------
 
     async def _initialize(self) -> None:
-        """Initialize all modules."""
-        raise NotImplementedError
+        """Initialize all modules (section 4.4)."""
+        logger.info("Initializing modules")
+        await self._state_store.initialize()
+        await self._order_manager.initialize()
+        await self._market_data.connect()
+
+        # Wait for first WS price data before proceeding (bounded)
+        deadline = time.monotonic() + _INITIAL_WS_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if all(
+                self._market_data.get_mid_price(ac.symbol) > 0
+                for ac in self._config.assets
+            ):
+                break
+            await asyncio.sleep(0.25)
+        else:
+            missing = [
+                ac.symbol for ac in self._config.assets
+                if self._market_data.get_mid_price(ac.symbol) <= 0
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Timed out waiting for initial WS price for: {missing}"
+                )
+
+        # Start fill pump (section 7.12)
+        self._fill_task = asyncio.create_task(self._fill_pump())
+
+        logger.info("Initialization complete")
 
     async def _recover_state(self) -> None:
-        """Execute restart recovery sequence (section 4.4).
+        """Restart recovery sequence (section 4.4)."""
+        logger.info("Recovering state")
+        for asset_cfg in self._config.assets:
+            symbol = asset_cfg.symbol
 
-        1. Load persisted state from StateStore
-        2. Query exchange for current open orders + position
-        3. Reconcile persisted vs exchange state
-        4. Rebuild desired grid based on regime and exchange-confirmed position
-        """
-        raise NotImplementedError
+            # 1. Load persisted state
+            persisted = await self._state_store.load_bot_state(symbol)
+            if persisted is not None:
+                self._asset_states[symbol] = persisted
+
+            state = self._asset_states[symbol]
+
+            # Restore pending flips from store (source of truth)
+            state.pending_flips = await self._state_store.load_pending_flips(symbol)
+
+            # Restore grid_config (may be separate row)
+            grid_cfg = await self._state_store.load_grid_config(symbol)
+            if grid_cfg is not None:
+                state.grid_config = grid_cfg
+
+            # 2. Fetch exchange state
+            exchange_orders = await self._market_data.fetch_open_orders(symbol)
+            exchange_position = await self._market_data.fetch_position(symbol)
+
+            # 3. Reconcile — adopt exchange as truth, cancel orphans
+            persisted_cloids = {
+                o.client_order_id for o in state.open_orders if o.client_order_id
+            }
+            orphans = [
+                o for o in exchange_orders
+                if o.client_order_id and o.client_order_id not in persisted_cloids
+            ]
+            if orphans:
+                logger.warning(
+                    "Found %d orphan orders on exchange for %s, cancelling",
+                    len(orphans), symbol,
+                )
+                await self._order_manager.cancel_orders(symbol, orphans)
+                exchange_orders = await self._market_data.fetch_open_orders(symbol)
+
+            state.open_orders = exchange_orders
+            state.position = exchange_position
+
+            # 4. Resume FLATTENING if persisted and position remains
+            if state.bot_state == BotState.FLATTENING:
+                if exchange_position is not None and abs(exchange_position.size) > 0:
+                    logger.warning(
+                        "Resuming FLATTENING for %s (pos=%.6f)",
+                        symbol, exchange_position.size,
+                    )
+                    await self._run_flatten(symbol, asset_cfg)
+                else:
+                    state.bot_state = BotState.STARTING
+
+            # Start from a clean run state if nothing else dictated otherwise
+            if state.bot_state in (BotState.DEAD, BotState.SHUTTING_DOWN):
+                # Preserve DEAD; treat SHUTTING_DOWN as fresh start
+                if state.bot_state == BotState.SHUTTING_DOWN:
+                    state.bot_state = BotState.STARTING
+            else:
+                state.bot_state = BotState.STARTING
+
+        logger.info("State recovery complete")
 
     async def _preflight_checks(self) -> None:
         """Run pre-flight validation (section 6.1).
 
-        Refuse to start if leverage/sizing/levels can't maintain
-        the liquidation buffer under worst-case inventory.
+        Hard gate — no operator override allowed.
         """
-        raise NotImplementedError
+        logger.info("Running pre-flight checks")
+        equity = await self._market_data.fetch_account_equity()
+        if equity <= 0:
+            raise RuntimeError(f"Pre-flight: account_equity={equity} is non-positive")
+
+        all_violations: list[tuple[str, list[str]]] = []
+        for asset_cfg in self._config.assets:
+            violations = self._risk_manager.preflight_check(asset_cfg, equity)
+            if violations:
+                all_violations.append((asset_cfg.symbol, violations))
+
+        if all_violations:
+            for sym, vs in all_violations:
+                for v in vs:
+                    logger.error("Pre-flight violation [%s]: %s", sym, v)
+            raise RuntimeError("Pre-flight checks failed — refusing to start")
+
+        # All clear — transition assets to RUNNING
+        for ac in self._config.assets:
+            st = self._asset_states[ac.symbol]
+            if st.bot_state not in (BotState.DEAD,):
+                st.bot_state = BotState.RUNNING
+        logger.info("Pre-flight checks passed (equity=%.2f)", equity)
 
     # ------------------------------------------------------------------
     # Main event loop
     # ------------------------------------------------------------------
 
     async def _main_loop(self) -> None:
-        """Core event loop — runs until shutdown requested or dead state."""
-        raise NotImplementedError
+        """Core event loop — runs until shutdown or all assets DEAD."""
+        logger.info("Entering main loop")
+        while not self._shutdown_requested:
+            if all(
+                self._asset_states[ac.symbol].bot_state == BotState.DEAD
+                for ac in self._config.assets
+            ):
+                logger.error("All assets DEAD — exiting main loop")
+                break
+
+            for asset_cfg in self._config.assets:
+                if self._shutdown_requested:
+                    break
+
+                symbol = asset_cfg.symbol
+                state = self._asset_states[symbol]
+
+                if state.bot_state == BotState.DEAD:
+                    continue
+
+                try:
+                    await self._run_cycle(symbol, asset_cfg)
+                except Exception as exc:
+                    if self._looks_like_maintenance(exc):
+                        logger.warning(
+                            "Cycle error for %s looks like maintenance: %s",
+                            symbol, exc,
+                        )
+                        await self._handle_maintenance()
+                    else:
+                        logger.exception("Cycle failed for %s", symbol)
+                        self._risk_manager.record_error()
+
+            await asyncio.sleep(self._config.operational.cycle_interval_seconds)
 
     async def _run_cycle(self, symbol: str, asset_config: AssetConfig) -> None:
-        """Execute one reconciliation cycle for a single asset.
+        """Execute one reconciliation cycle for a single asset (section 3.3)."""
+        state = self._asset_states[symbol]
+        now_ms = int(time.time() * 1000)
 
-        Follows the data flow in section 3.3.
-        """
-        raise NotImplementedError
+        # Respect COOLDOWN timer (keep heartbeat fresh so liveness check
+        # doesn't page operators during long cooldowns).
+        if state.bot_state == BotState.COOLDOWN:
+            await self._state_store.update_heartbeat(symbol, now_ms)
+            if state.cooldown_until_ms is not None and now_ms < state.cooldown_until_ms:
+                return
+            logger.info("Cooldown expired for %s — resuming", symbol)
+            state.bot_state = BotState.RUNNING
+            state.cooldown_until_ms = None
+
+        if state.bot_state == BotState.MAINTENANCE:
+            # If WS is healthy again, reconcile via REST and resume.
+            if self._market_data.is_ws_connected() and not self._ws_is_stale(now_ms):
+                logger.info("MAINTENANCE exit for %s — reconciling via REST", symbol)
+                await self._rest_reconciliation(symbol)
+                state.bot_state = BotState.RUNNING
+                await self._state_store.update_heartbeat(symbol, now_ms)
+            return
+
+        # WS staleness feeds the desync kill switch in RiskManager.
+        self._update_desync(now_ms)
+
+        # 1. Exchange-reported equity (source of truth)
+        account_equity = await self._market_data.fetch_account_equity()
+        self._risk_manager.record_equity(now_ms, account_equity)
+        state.account_equity = account_equity
+
+        # 2. Market data snapshot
+        vol_metrics = self._market_data.compute_vol_metrics(symbol)
+        state.vol_metrics = vol_metrics
+        state.mid_price = self._market_data.get_mid_price(symbol)
+        state.mark_price = self._market_data.get_mark_price(symbol)
+        state.funding_rate = self._market_data.get_funding_rate(symbol)
+
+        # Feed vol history for percentile calcs
+        self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
+
+        # 3. Regime detection + risk evaluation
+        state.regime = self._risk_manager.detect_regime(
+            symbol,
+            state.mid_price,
+            vol_metrics,
+            state.moving_avg,
+            state.last_breakout_ms,
+            now_ms,
+            asset_config,
+        )
+        decision = self._risk_manager.evaluate(state)
+
+        # 4. Dispatch risk action. Actions that skip all further grid/persist
+        # work (KILL, CANCEL_AND_FLATTEN, PAUSE_GRID, SUPPRESS_NEW_ENTRIES)
+        # return from inside the handler. SKEW_*/REDUCE_ONLY fall through so
+        # GridEngine can apply the skew via state on the next reconcile.
+        skip_reconcile = False
+        if decision.action != RiskAction.CONTINUE:
+            skip_reconcile = await self._handle_risk_action(
+                symbol, decision, asset_config
+            )
+            if state.bot_state in (BotState.DEAD, BotState.COOLDOWN, BotState.FLATTENING):
+                return
+
+        if state.bot_state not in (BotState.RUNNING, BotState.STARTING):
+            return
+        state.bot_state = BotState.RUNNING
+
+        # 5. Grid computation and reconciliation (unless suppressed)
+        engine = self._grid_engines[symbol]
+        grid_cfg = state.grid_config
+        if not skip_reconcile:
+            desired = engine.compute_desired_orders(state)
+
+            if grid_cfg is not None:
+                config_hash = GridEngine.compute_config_hash(
+                    grid_cfg.anchor, grid_cfg.range_atr, grid_cfg.step_bps
+                )
+            else:
+                config_hash = ""
+
+            # Reconcile grid + backstop in a single batch (section 6.8)
+            if grid_cfg is not None and state.position is not None:
+                await self._order_manager.reconcile_with_backstop(
+                    symbol=symbol,
+                    desired=desired,
+                    current=state.open_orders,
+                    mid_price=state.mid_price,
+                    position=state.position,
+                    anchor=grid_cfg.anchor,
+                    atr=vol_metrics.atr,
+                    breakout_atr_distance=asset_config.breakout_atr_distance,
+                    backstop_buffer_atr=asset_config.backstop_buffer_atr,
+                    config_hash=config_hash,
+                )
+            else:
+                await self._order_manager.reconcile(
+                    symbol, desired, state.open_orders, state.mid_price
+                )
+
+        # 7. Persist state + grid config + pending flips
+        if grid_cfg is not None:
+            await self._state_store.save_grid_config(grid_cfg)
+        await self._state_store.save_open_orders(symbol, state.open_orders)
+        await self._state_store.save_pending_flips(symbol, state.pending_flips)
+        await self._state_store.save_bot_state(symbol, state)
+        await self._state_store.update_heartbeat(symbol, now_ms)
+
+        # 8. PnL cross-check (own cadence)
+        crosscheck_interval_ms = int(
+            self._config.portfolio.pnl_crosscheck_interval_seconds * 1000
+        )
+        if now_ms - self._last_crosscheck_ms[symbol] >= crosscheck_interval_ms:
+            exchange_pnl = await self._market_data.fetch_exchange_pnl(symbol)
+            diverged = await self._pnl_monitor.crosscheck(symbol, exchange_pnl, now_ms)
+            self._last_crosscheck_ms[symbol] = now_ms
+            if diverged:
+                await self._send_alert(
+                    "WARNING",
+                    f"PnL divergence detected for {symbol}",
+                )
+
+        # 9. REST reconciliation (own cadence)
+        reconcile_interval_ms = int(
+            self._config.operational.reconcile_interval_seconds * 1000
+        )
+        if now_ms - self._last_rest_reconcile_ms[symbol] >= reconcile_interval_ms:
+            await self._rest_reconciliation(symbol)
+            self._last_rest_reconcile_ms[symbol] = now_ms
+
+        # 10. Cycle metrics
+        logger.info(
+            "cycle symbol=%s regime=%s mid=%.4f equity=%.2f orders=%d pos=%.6f",
+            symbol,
+            state.regime.name,
+            state.mid_price,
+            state.account_equity,
+            len(state.open_orders),
+            state.position.size if state.position else 0.0,
+        )
+        self._risk_manager.clear_errors()
+
+    def _ws_is_stale(self, now_ms: int) -> bool:
+        last = self._market_data.get_last_ws_message_ms()
+        return last > 0 and (now_ms - last) > _WS_STALE_MS
+
+    def _update_desync(self, now_ms: int) -> None:
+        last = self._market_data.get_last_ws_message_ms()
+        if last <= 0:
+            return
+        gap_ms = now_ms - last
+        if gap_ms > _WS_STALE_MS:
+            self._risk_manager.record_desync(gap_ms)
+        else:
+            self._risk_manager.clear_desync()
 
     # ------------------------------------------------------------------
     # Graceful shutdown (section 4.5)
     # ------------------------------------------------------------------
 
     async def _shutdown(self) -> None:
-        """Graceful shutdown sequence.
+        """Cancel orders, persist state, disconnect — do NOT flatten."""
+        logger.info("Shutdown sequence starting")
 
-        1. Stop the main loop
-        2. Cancel all resting grid orders (batch cancel)
-        3. Do NOT flatten (section 4.5 — avoid unnecessary taker fees)
-        4. Persist final state to StateStore
-        5. Close WS connections
-        """
-        raise NotImplementedError
+        # 1. Mark state
+        for state in self._asset_states.values():
+            if state.bot_state != BotState.DEAD:
+                state.bot_state = BotState.SHUTTING_DOWN
+
+        # 2. Batch cancel per asset (no flatten — section 4.5)
+        for asset_cfg in self._config.assets:
+            try:
+                await self._order_manager.cancel_all_orders(asset_cfg.symbol)
+            except Exception:
+                logger.exception(
+                    "Failed to cancel orders for %s during shutdown",
+                    asset_cfg.symbol,
+                )
+
+        # 3. Stop fill pump
+        if self._fill_task is not None and not self._fill_task.done():
+            self._fill_task.cancel()
+            try:
+                await self._fill_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Fill pump raised during shutdown")
+
+        # 4. Persist final state
+        for symbol, state in self._asset_states.items():
+            try:
+                await self._state_store.save_bot_state(symbol, state)
+            except Exception:
+                logger.exception("Failed to persist final state for %s", symbol)
+
+        # 5. Disconnect WS
+        try:
+            await self._market_data.disconnect()
+        except Exception:
+            logger.exception("MarketData disconnect failed")
+
+        # 6. Close store
+        try:
+            await self._state_store.close()
+        except Exception:
+            logger.exception("StateStore close failed")
+
+        logger.info("Shutdown complete")
 
     # ------------------------------------------------------------------
     # Risk action handling
@@ -144,41 +517,266 @@ class Supervisor:
     async def _handle_risk_action(
         self,
         symbol: str,
-        action: RiskAction,
-        reason: str,
-    ) -> None:
-        """Execute the appropriate response to a risk decision."""
-        raise NotImplementedError
+        decision: RiskDecision,
+        asset_cfg: AssetConfig,
+    ) -> bool:
+        """Execute the appropriate response to a risk decision.
 
-    # ------------------------------------------------------------------
-    # Alerting (section 10.3)
-    # ------------------------------------------------------------------
+        Returns True when the caller should skip grid reconciliation for this
+        cycle (PAUSE_GRID / SUPPRESS_NEW_ENTRIES). Terminal actions
+        (CANCEL_AND_FLATTEN / KILL) transition state and also return True.
+        SKEW_* / REDUCE_ONLY return False — GridEngine applies the skew
+        directly via state during the subsequent reconcile.
+        """
+        action = decision.action
+        reason = decision.reason
+        state = self._asset_states[symbol]
 
-    async def _send_alert(self, severity: str, message: str) -> None:
-        """Send alert via configured channel (Telegram/Discord/email)."""
-        raise NotImplementedError
+        logger.info("Risk action %s for %s: %s", action.name, symbol, reason)
+
+        if action in (
+            RiskAction.SKEW_INVENTORY,
+            RiskAction.REDUCE_ONLY,
+            RiskAction.SKEW_FUNDING,
+        ):
+            # GridEngine reads position / funding / regime from state and
+            # applies the appropriate skew during reconcile. No-op here.
+            return False
+
+        if action in (RiskAction.PAUSE_GRID, RiskAction.SUPPRESS_NEW_ENTRIES):
+            # Keep existing orders in place; skip new grid reconciliation.
+            return True
+
+        if action == RiskAction.CANCEL_AND_FLATTEN:
+            await self._send_alert("WARNING", f"Cancel+flatten for {symbol}: {reason}")
+            await self._order_manager.cancel_all_orders(symbol)
+            state.open_orders = []
+            if state.position is not None and abs(state.position.size) > 0:
+                state.bot_state = BotState.FLATTENING
+                await self._state_store.save_bot_state(symbol, state)
+                await self._run_flatten(symbol, asset_cfg)
+
+            # If flatten failed and we're now DEAD, keep DEAD sticky —
+            # do NOT overwrite with COOLDOWN.
+            if state.bot_state == BotState.DEAD:
+                await self._state_store.save_bot_state(symbol, state)
+                return True
+
+            # Enter cooldown
+            cooldown_ms = int(asset_cfg.cooldown_minutes * 60 * 1000)
+            now_ms = int(time.time() * 1000)
+            state.bot_state = BotState.COOLDOWN
+            state.cooldown_until_ms = now_ms + cooldown_ms
+            # Only bump the breakout cooldown timer for actual breakout
+            # causes; vol-kill and drawdown have their own gates and
+            # shouldn't piggy-back on breakout regime-cooldown logic.
+            details = decision.details or {}
+            if details.get("type") in _BREAKOUT_DETAIL_TYPES:
+                state.last_breakout_ms = now_ms
+            await self._state_store.save_bot_state(symbol, state)
+            return True
+
+        if action == RiskAction.KILL:
+            await self._send_alert("CRITICAL", f"KILL switch fired for {symbol}: {reason}")
+            await self._order_manager.cancel_all_orders(symbol)
+            state.open_orders = []
+            if state.position is not None and abs(state.position.size) > 0:
+                state.bot_state = BotState.FLATTENING
+                await self._state_store.save_bot_state(symbol, state)
+                await self._run_flatten(symbol, asset_cfg)
+            state.bot_state = BotState.DEAD
+            await self._state_store.save_bot_state(symbol, state)
+            return True
+
+        return False
+
+    async def _run_flatten(self, symbol: str, asset_cfg: AssetConfig) -> None:
+        """Invoke OrderManager's flatten state machine (section 6.7)."""
+        state = self._asset_states[symbol]
+        if state.position is None or abs(state.position.size) < 1e-12:
+            return
+
+        async def _get_mid(sym: str) -> float:
+            return self._market_data.get_mid_price(sym)
+
+        async def _get_depth(sym: str, slippage_bps: float, side) -> float:
+            return await self._market_data.fetch_book_depth(sym, slippage_bps, side)
+
+        async def _get_position(sym: str) -> Position | None:
+            return await self._market_data.fetch_position(sym)
+
+        fully_flattened = await self._order_manager.execute_flatten(
+            symbol,
+            state.position,
+            asset_cfg,
+            _get_mid,
+            _get_depth,
+            _get_position,
+        )
+        if not fully_flattened:
+            logger.error("Flatten incomplete for %s — entering DEAD", symbol)
+            state.bot_state = BotState.DEAD
+            await self._send_alert("CRITICAL", f"Flatten residual for {symbol}")
+        # Refresh position post-flatten
+        state.position = await self._market_data.fetch_position(symbol)
 
     # ------------------------------------------------------------------
     # REST reconciliation (section 4.3 — backup path)
     # ------------------------------------------------------------------
 
     async def _rest_reconciliation(self, symbol: str) -> None:
-        """Periodic REST consistency check against WS-maintained state.
+        """Periodic REST consistency check against WS-maintained state."""
+        try:
+            rest_orders = await self._market_data.fetch_open_orders(symbol)
+            rest_position = await self._market_data.fetch_position(symbol)
+        except Exception:
+            logger.exception("REST reconciliation failed for %s", symbol)
+            self._risk_manager.record_error()
+            return
 
-        Runs every reconcile_interval_seconds.
-        On discrepancy: log warning, adopt exchange state, recompute grid.
-        """
-        raise NotImplementedError
+        state = self._asset_states[symbol]
+
+        local_cloids = {o.client_order_id for o in state.open_orders}
+        rest_cloids = {o.client_order_id for o in rest_orders}
+        if local_cloids != rest_cloids:
+            logger.warning(
+                "REST/WS order divergence for %s: local=%d rest=%d — adopting exchange",
+                symbol, len(local_cloids), len(rest_cloids),
+            )
+            state.open_orders = rest_orders
+
+        # Position reconciliation
+        local_size = state.position.size if state.position else 0.0
+        rest_size = rest_position.size if rest_position else 0.0
+        if abs(local_size - rest_size) > 1e-9:
+            logger.warning(
+                "REST/WS position divergence for %s: local=%.8f rest=%.8f — adopting exchange",
+                symbol, local_size, rest_size,
+            )
+        state.position = rest_position
+
+        self._risk_manager.clear_desync()
 
     # ------------------------------------------------------------------
     # Maintenance detection (section 10.4)
     # ------------------------------------------------------------------
 
     async def _handle_maintenance(self) -> None:
-        """Enter maintenance-awareness mode.
+        """Enter maintenance-aware mode for all assets.
 
-        - Errors don't count toward kill switch
-        - Exponential backoff on reconnection
-        - Full reconciliation on reconnect
+        MarketData handles the WS reconnect with exponential backoff
+        internally; supervisor's job is to stop counting errors toward the
+        kill switch and avoid risk decisions during the window.
         """
-        raise NotImplementedError
+        logger.warning("Entering MAINTENANCE mode")
+        for state in self._asset_states.values():
+            if state.bot_state not in (BotState.DEAD, BotState.SHUTTING_DOWN):
+                state.bot_state = BotState.MAINTENANCE
+        self._risk_manager.record_error(is_maintenance=True)
+
+    # ------------------------------------------------------------------
+    # Alerting (section 10.3)
+    # ------------------------------------------------------------------
+
+    async def _send_alert(self, severity: str, message: str) -> None:
+        """Send alert via configured channel (pluggable callback)."""
+        level = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "CRITICAL": logging.CRITICAL,
+        }.get(severity.upper(), logging.INFO)
+        logger.log(level, "[ALERT:%s] %s", severity, message)
+
+        if self._alert_callback is not None:
+            try:
+                await self._alert_callback(severity, message)
+            except Exception:
+                logger.exception("Alert callback failed")
+
+    # ------------------------------------------------------------------
+    # Fill event processing (section 7.12)
+    # ------------------------------------------------------------------
+
+    async def _fill_pump(self) -> None:
+        """Drain MarketData fills queue and route to handlers."""
+        queue = self._market_data.fills
+        if queue is None:
+            return
+        while not self._shutdown_requested:
+            try:
+                fill = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+            try:
+                await self._route_fill(fill)
+            except Exception:
+                logger.exception("Failed to route fill %s", fill.fill_id)
+
+    async def _route_fill(self, fill: Fill) -> None:
+        """Route a fill to PnLMonitor, OrderManager flip logic, StateStore."""
+        symbol = fill.symbol
+        state = self._asset_states.get(symbol)
+        if state is None:
+            return
+
+        # PnL ledger
+        self._pnl_monitor.record_fill(fill)
+
+        # StateStore ledger
+        await self._state_store.record_fill(fill)
+
+        # Only flip on full fills
+        if fill.is_partial or state.grid_config is None:
+            return
+
+        position_size = state.position.size if state.position else 0.0
+        zone = self._grid_engines[symbol].classify_inventory_zone(position_size)
+        flip = self._order_manager.compute_flip_order(
+            fill,
+            state.grid_config.step_bps,
+            inventory_zone_is_hard_cap=(zone == InventoryZone.HARD_CAP),
+        )
+        if flip is None:
+            return
+
+        # Persist the flip as a pending flip (section 7.6)
+        state.pending_flips.append(
+            PendingFlip(
+                price=flip.price,
+                side=flip.side,
+                size=flip.size,
+                originating_fill_id=fill.fill_id,
+            )
+        )
+        await self._state_store.save_pending_flips(symbol, state.pending_flips)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _asset_config(self, symbol: str) -> AssetConfig:
+        for ac in self._config.assets:
+            if ac.symbol == symbol:
+                return ac
+        return self._config.assets[0]
+
+    @staticmethod
+    def _looks_like_maintenance(exc: BaseException) -> bool:
+        """Classify whether an exception is from exchange maintenance.
+
+        Covers the connection-refused / 503 cases called out in CLAUDE.md
+        ("Don't count maintenance errors toward the kill switch"). Matching
+        is deliberately conservative: type-based first, then substring on
+        the message for SDK-wrapped HTTP errors we can't type-check.
+        """
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return True
+        msg = str(exc).lower()
+        return any(
+            token in msg
+            for token in ("503", "service unavailable", "connection refused", "maintenance")
+        )

@@ -597,6 +597,28 @@ class MarketData:
             )
         return None
 
+    async def fetch_account_equity(self) -> float:
+        """REST fetch of account equity (section 6.6).
+
+        Uses exchange-reported marginSummary.accountValue (the source of
+        truth for drawdown checks).
+        """
+        if not self._info or not self._config.wallet_address:
+            return 0.0
+
+        loop = asyncio.get_running_loop()
+        try:
+            state = await loop.run_in_executor(
+                None,
+                partial(self._info.user_state, self._config.wallet_address),
+            )
+        except Exception:
+            logger.error("Failed to fetch account equity", exc_info=True)
+            return 0.0
+
+        summary = state.get("marginSummary", {})
+        return float(summary.get("accountValue", "0") or 0)
+
     async def fetch_exchange_pnl(self, symbol: str) -> float:
         """REST fetch of exchange-reported unrealized PnL (section 10.6)."""
         if not self._info or not self._config.wallet_address:
@@ -635,6 +657,14 @@ class MarketData:
     def get_funding_rate(self, symbol: str) -> float:
         """Latest funding rate for the asset."""
         return self._funding_rates.get(symbol, 0.0)
+
+    def get_last_ws_message_ms(self) -> int:
+        """Timestamp (ms) of the last WS message, or 0 if no messages yet."""
+        return self._last_ws_message_ms
+
+    def is_ws_connected(self) -> bool:
+        """Whether the WS connection is currently healthy."""
+        return self._ws_connected
 
     def compute_vol_metrics(self, symbol: str) -> VolMetrics:
         """Compute current volatility metrics from buffered data."""

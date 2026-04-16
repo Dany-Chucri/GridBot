@@ -85,7 +85,7 @@ class GridEngine:
 
         step_bps = self.compute_effective_step(vol_metrics, state.mid_price)
         order_size = self._compute_order_size(vol_metrics, state.account_equity)
-        inventory_zone = self._classify_inventory_zone(position_size)
+        inventory_zone = self.classify_inventory_zone(position_size)
 
         # Core levels (always active in RANGE)
         core_levels = self._compute_core_levels(
@@ -357,7 +357,7 @@ class GridEngine:
     # Inventory skewing (section 6.2)
     # ------------------------------------------------------------------
 
-    def _classify_inventory_zone(self, position_size: float) -> InventoryZone:
+    def classify_inventory_zone(self, position_size: float) -> InventoryZone:
         """Classify current position into Normal / Soft Cap / Hard Cap."""
         cfg = self._config
         hard_cap = cfg.max_abs_position

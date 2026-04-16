@@ -1,0 +1,757 @@
+"""Tests for Supervisor — orchestration, cycle flow, risk routing, shutdown."""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from gridbot.config import AssetConfig, BotConfig, OperationalConfig, PortfolioConfig
+from gridbot.risk_manager import RiskAction, RiskDecision
+from gridbot.supervisor import Supervisor
+from gridbot.types import (
+    AssetState,
+    BotState,
+    Fill,
+    GridConfig,
+    OpenOrder,
+    OrderSide,
+    PendingFlip,
+    Position,
+    Regime,
+    VolMetrics,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _cfg(symbols: tuple[str, ...] = ("BTC-PERP",)) -> BotConfig:
+    assets = [AssetConfig(symbol=s, max_abs_position=1.0) for s in symbols]
+    return BotConfig(
+        assets=assets,
+        operational=OperationalConfig(
+            cycle_interval_seconds=0.01,
+            reconcile_interval_seconds=0.02,
+        ),
+        portfolio=PortfolioConfig(pnl_crosscheck_interval_seconds=0.05),
+    )
+
+
+def _make_supervisor(
+    config: BotConfig | None = None,
+    *,
+    market_data=None,
+    order_manager=None,
+    risk_manager=None,
+    state_store=None,
+    pnl_monitor=None,
+) -> Supervisor:
+    cfg = config or _cfg()
+    return Supervisor(
+        cfg,
+        market_data=market_data or _mock_market_data(),
+        order_manager=order_manager or _mock_order_manager(),
+        risk_manager=risk_manager or _mock_risk_manager(),
+        state_store=state_store or _mock_state_store(),
+        pnl_monitor=pnl_monitor or _mock_pnl_monitor(),
+    )
+
+
+def _mock_market_data(mid: float = 50000.0) -> MagicMock:
+    md = MagicMock()
+    md.connect = AsyncMock()
+    md.disconnect = AsyncMock()
+    md.fetch_account_equity = AsyncMock(return_value=100_000.0)
+    md.fetch_open_orders = AsyncMock(return_value=[])
+    md.fetch_position = AsyncMock(return_value=None)
+    md.fetch_exchange_pnl = AsyncMock(return_value=0.0)
+    md.fetch_book_depth = AsyncMock(return_value=10.0)
+    md.get_mid_price = MagicMock(return_value=mid)
+    md.get_mark_price = MagicMock(return_value=mid)
+    md.get_funding_rate = MagicMock(return_value=0.0)
+    md.get_last_ws_message_ms = MagicMock(return_value=0)
+    md.is_ws_connected = MagicMock(return_value=True)
+    md.compute_vol_metrics = MagicMock(return_value=VolMetrics(
+        realized_vol=0.5,
+        atr=100.0,
+        spread_bps=2.0,
+        rolling_return_1m=0.0,
+        rolling_return_5m=0.0,
+    ))
+    md.fills = asyncio.Queue()
+    return md
+
+
+def _mock_order_manager() -> MagicMock:
+    om = MagicMock()
+    om.initialize = AsyncMock()
+    om.reconcile = AsyncMock()
+    om.reconcile_with_backstop = AsyncMock()
+    om.cancel_all_orders = AsyncMock()
+    om.cancel_orders = AsyncMock()
+    om.execute_flatten = AsyncMock(return_value=True)
+    om.update_backstop = AsyncMock()
+    om.compute_flip_order = MagicMock(return_value=None)
+    return om
+
+
+def _mock_risk_manager(
+    action: RiskAction = RiskAction.CONTINUE, reason: str = "ok"
+) -> MagicMock:
+    rm = MagicMock()
+    rm.evaluate = MagicMock(return_value=RiskDecision(action=action, reason=reason))
+    rm.detect_regime = MagicMock(return_value=Regime.RANGE)
+    rm.preflight_check = MagicMock(return_value=[])
+    rm.record_equity = MagicMock()
+    rm.record_vol = MagicMock()
+    rm.record_error = MagicMock()
+    rm.record_desync = MagicMock()
+    rm.clear_errors = MagicMock()
+    rm.clear_desync = MagicMock()
+    return rm
+
+
+def _mock_state_store() -> MagicMock:
+    ss = MagicMock()
+    ss.initialize = AsyncMock()
+    ss.close = AsyncMock()
+    ss.load_bot_state = AsyncMock(return_value=None)
+    ss.load_grid_config = AsyncMock(return_value=None)
+    ss.load_pending_flips = AsyncMock(return_value=[])
+    ss.save_grid_config = AsyncMock()
+    ss.save_open_orders = AsyncMock()
+    ss.save_pending_flips = AsyncMock()
+    ss.save_bot_state = AsyncMock()
+    ss.update_heartbeat = AsyncMock()
+    ss.record_fill = AsyncMock()
+    return ss
+
+
+def _mock_pnl_monitor() -> MagicMock:
+    pm = MagicMock()
+    pm.record_fill = MagicMock()
+    pm.crosscheck = AsyncMock(return_value=False)
+    return pm
+
+
+def _fill(
+    symbol: str = "BTC-PERP",
+    price: float = 50000.0,
+    size: float = 0.1,
+    side: OrderSide = OrderSide.BUY,
+    is_partial: bool = False,
+) -> Fill:
+    return Fill(
+        fill_id=f"f-{price}-{side.value}",
+        order_id=1,
+        client_order_id="cloid",
+        symbol=symbol,
+        price=price,
+        size=size,
+        side=side,
+        fee=0.0,
+        timestamp_ms=1000,
+        is_maker=True,
+        is_partial=is_partial,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
+
+
+class TestConstruction:
+    def test_creates_engines_and_states_per_asset(self):
+        sup = _make_supervisor(_cfg(("BTC-PERP", "ETH-PERP")))
+        assert set(sup._grid_engines.keys()) == {"BTC-PERP", "ETH-PERP"}
+        assert set(sup._asset_states.keys()) == {"BTC-PERP", "ETH-PERP"}
+
+    def test_request_shutdown_sets_flag(self):
+        sup = _make_supervisor()
+        assert sup._shutdown_requested is False
+        sup.request_shutdown()
+        assert sup._shutdown_requested is True
+
+
+# ---------------------------------------------------------------------------
+# Initialization
+# ---------------------------------------------------------------------------
+
+
+class TestInitialize:
+    @pytest.mark.asyncio
+    async def test_initializes_all_modules(self):
+        md = _mock_market_data()
+        om = _mock_order_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(market_data=md, order_manager=om, state_store=ss)
+
+        await sup._initialize()
+
+        ss.initialize.assert_awaited_once()
+        om.initialize.assert_awaited_once()
+        md.connect.assert_awaited_once()
+        # Fill pump started
+        assert sup._fill_task is not None
+        sup._fill_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_ws_never_delivers_price(self, monkeypatch):
+        md = _mock_market_data(mid=0.0)
+        sup = _make_supervisor(market_data=md)
+
+        # Patch the module-level timeout to something short for the test
+        monkeypatch.setattr("gridbot.supervisor._INITIAL_WS_TIMEOUT_S", 0.2)
+
+        with pytest.raises(RuntimeError, match="Timed out"):
+            await sup._initialize()
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight
+# ---------------------------------------------------------------------------
+
+
+class TestPreflight:
+    @pytest.mark.asyncio
+    async def test_refuses_on_violation(self):
+        rm = _mock_risk_manager()
+        rm.preflight_check = MagicMock(return_value=["too much leverage"])
+        sup = _make_supervisor(risk_manager=rm)
+
+        with pytest.raises(RuntimeError, match="Pre-flight checks failed"):
+            await sup._preflight_checks()
+
+    @pytest.mark.asyncio
+    async def test_refuses_on_zero_equity(self):
+        md = _mock_market_data()
+        md.fetch_account_equity = AsyncMock(return_value=0.0)
+        sup = _make_supervisor(market_data=md)
+
+        with pytest.raises(RuntimeError, match="non-positive"):
+            await sup._preflight_checks()
+
+    @pytest.mark.asyncio
+    async def test_transitions_assets_to_running_on_pass(self):
+        sup = _make_supervisor()
+        await sup._preflight_checks()
+        for state in sup._asset_states.values():
+            assert state.bot_state == BotState.RUNNING
+
+
+# ---------------------------------------------------------------------------
+# State recovery
+# ---------------------------------------------------------------------------
+
+
+class TestRecovery:
+    @pytest.mark.asyncio
+    async def test_restores_persisted_state(self):
+        persisted = AssetState(symbol="BTC-PERP", bot_state=BotState.RUNNING)
+        ss = _mock_state_store()
+        ss.load_bot_state = AsyncMock(return_value=persisted)
+        sup = _make_supervisor(state_store=ss)
+
+        await sup._recover_state()
+        # Bot state is reset to STARTING for fresh run
+        assert sup._asset_states["BTC-PERP"].bot_state == BotState.STARTING
+
+    @pytest.mark.asyncio
+    async def test_cancels_orphan_orders(self):
+        orphan = OpenOrder(
+            order_id=42,
+            client_order_id="0xunknown",
+            symbol="BTC-PERP",
+            price=49000.0,
+            size=0.1,
+            remaining=0.1,
+            side=OrderSide.BUY,
+        )
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(side_effect=[[orphan], []])
+        om = _mock_order_manager()
+        sup = _make_supervisor(market_data=md, order_manager=om)
+
+        await sup._recover_state()
+
+        om.cancel_orders.assert_awaited_once()
+        args, kwargs = om.cancel_orders.await_args
+        assert args[0] == "BTC-PERP"
+        assert len(args[1]) == 1
+        assert args[1][0].client_order_id == "0xunknown"
+
+    @pytest.mark.asyncio
+    async def test_resumes_flattening_when_position_remains(self):
+        persisted = AssetState(
+            symbol="BTC-PERP", bot_state=BotState.FLATTENING,
+        )
+        ss = _mock_state_store()
+        ss.load_bot_state = AsyncMock(return_value=persisted)
+
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=Position(
+            symbol="BTC-PERP", size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        ))
+        om = _mock_order_manager()
+        sup = _make_supervisor(market_data=md, order_manager=om, state_store=ss)
+
+        await sup._recover_state()
+        om.execute_flatten.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Cycle
+# ---------------------------------------------------------------------------
+
+
+class TestCycle:
+    @pytest.mark.asyncio
+    async def test_cycle_calls_modules_in_order(self):
+        md = _mock_market_data()
+        rm = _mock_risk_manager()
+        om = _mock_order_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(
+            market_data=md, order_manager=om, risk_manager=rm, state_store=ss
+        )
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        md.fetch_account_equity.assert_awaited_once()
+        rm.record_equity.assert_called_once()
+        rm.detect_regime.assert_called_once()
+        rm.evaluate.assert_called_once()
+        # No grid_config -> fallback reconcile path (no position yet)
+        om.reconcile.assert_awaited_once()
+        ss.save_bot_state.assert_awaited()
+        ss.update_heartbeat.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cycle_uses_reconcile_with_backstop_when_position_exists(self):
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.grid_config = GridConfig(
+            symbol=asset_cfg.symbol, anchor=50000.0,
+            range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        state.position = Position(
+            symbol=asset_cfg.symbol, size=0.1,
+            avg_entry_price=50000.0, unrealized_pnl=0.0,
+        )
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+        om.reconcile_with_backstop.assert_awaited_once()
+        om.reconcile.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_respected(self):
+        sup = _make_supervisor()
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.COOLDOWN
+        state.cooldown_until_ms = 2**62  # far future
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+        # No modules advanced past the cooldown gate
+        # RiskManager.evaluate should NOT be called
+        sup._risk_manager.evaluate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Risk action handling
+# ---------------------------------------------------------------------------
+
+
+class TestRiskActions:
+    @pytest.mark.asyncio
+    async def test_kill_cancels_and_enters_dead(self):
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = Position(
+            symbol=symbol, size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+
+        await sup._handle_risk_action(
+            symbol, RiskDecision(action=RiskAction.KILL, reason="vol kill"), asset_cfg
+        )
+
+        om.cancel_all_orders.assert_awaited()
+        om.execute_flatten.assert_awaited()
+        assert state.bot_state == BotState.DEAD
+
+    @pytest.mark.asyncio
+    async def test_cancel_and_flatten_enters_cooldown(self):
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = Position(
+            symbol=symbol, size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+
+        await sup._handle_risk_action(
+            symbol,
+            RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="breakout",
+                details={"type": "distance"},
+            ),
+            asset_cfg,
+        )
+
+        om.cancel_all_orders.assert_awaited()
+        om.execute_flatten.assert_awaited()
+        assert state.bot_state == BotState.COOLDOWN
+        assert state.cooldown_until_ms is not None
+        assert state.last_breakout_ms is not None
+
+    @pytest.mark.asyncio
+    async def test_cancel_and_flatten_does_not_set_breakout_for_non_breakout(self):
+        """vol-kill and drawdown shouldn't piggy-back on breakout cooldown."""
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = None
+
+        await sup._handle_risk_action(
+            symbol,
+            RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="vol kill",
+                details={"percentile": 99.0},
+            ),
+            asset_cfg,
+        )
+        assert state.bot_state == BotState.COOLDOWN
+        assert state.last_breakout_ms is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_and_flatten_dead_stays_dead(self):
+        """If flatten fails and sets DEAD, COOLDOWN must not overwrite."""
+        om = _mock_order_manager()
+        om.execute_flatten = AsyncMock(return_value=False)  # flatten residual
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = Position(
+            symbol=symbol, size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+
+        await sup._handle_risk_action(
+            symbol,
+            RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="breakout",
+                details={"type": "distance"},
+            ),
+            asset_cfg,
+        )
+        assert state.bot_state == BotState.DEAD
+
+    @pytest.mark.asyncio
+    async def test_pause_grid_does_not_cancel(self):
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+
+        skip = await sup._handle_risk_action(
+            symbol,
+            RiskDecision(action=RiskAction.PAUSE_GRID, reason="high vol"),
+            asset_cfg,
+        )
+        om.cancel_all_orders.assert_not_awaited()
+        om.execute_flatten.assert_not_awaited()
+        assert skip is True
+
+    @pytest.mark.asyncio
+    async def test_skew_inventory_is_noop(self):
+        om = _mock_order_manager()
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+
+        skip = await sup._handle_risk_action(
+            symbol,
+            RiskDecision(action=RiskAction.SKEW_INVENTORY, reason="soft cap"),
+            asset_cfg,
+        )
+        om.cancel_all_orders.assert_not_awaited()
+        # Skew must NOT skip reconcile — GridEngine needs to apply the skew.
+        assert skip is False
+
+
+# ---------------------------------------------------------------------------
+# REST reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestRestReconciliation:
+    @pytest.mark.asyncio
+    async def test_adopts_exchange_orders_on_divergence(self):
+        symbol = "BTC-PERP"
+        rest_order = OpenOrder(
+            order_id=1, client_order_id="0xabc", symbol=symbol,
+            price=49000.0, size=0.1, remaining=0.1, side=OrderSide.BUY,
+        )
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(return_value=[rest_order])
+        sup = _make_supervisor(market_data=md)
+
+        state = sup._asset_states[symbol]
+        state.open_orders = []  # local thinks no orders
+
+        await sup._rest_reconciliation(symbol)
+        assert state.open_orders == [rest_order]
+
+    @pytest.mark.asyncio
+    async def test_adopts_exchange_position(self):
+        symbol = "BTC-PERP"
+        rest_pos = Position(
+            symbol=symbol, size=0.3, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=rest_pos)
+        sup = _make_supervisor(market_data=md)
+
+        await sup._rest_reconciliation(symbol)
+        assert sup._asset_states[symbol].position == rest_pos
+
+
+# ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestShutdown:
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_without_flatten(self):
+        om = _mock_order_manager()
+        md = _mock_market_data()
+        ss = _mock_state_store()
+        sup = _make_supervisor(order_manager=om, market_data=md, state_store=ss)
+
+        await sup._shutdown()
+
+        om.cancel_all_orders.assert_awaited()
+        # Design: no flatten on graceful shutdown
+        om.execute_flatten.assert_not_awaited()
+        md.disconnect.assert_awaited()
+        ss.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_assets(self):
+        sup = _make_supervisor()
+        await sup._shutdown()
+        for state in sup._asset_states.values():
+            assert state.bot_state == BotState.SHUTTING_DOWN
+
+
+# ---------------------------------------------------------------------------
+# Fill routing
+# ---------------------------------------------------------------------------
+
+
+class TestFillRouting:
+    @pytest.mark.asyncio
+    async def test_partial_fill_records_but_no_flip(self):
+        pm = _mock_pnl_monitor()
+        om = _mock_order_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(pnl_monitor=pm, order_manager=om, state_store=ss)
+
+        symbol = sup._config.assets[0].symbol
+        sup._asset_states[symbol].grid_config = GridConfig(
+            symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+
+        await sup._route_fill(_fill(is_partial=True))
+        pm.record_fill.assert_called_once()
+        ss.record_fill.assert_awaited_once()
+        om.compute_flip_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_full_fill_creates_pending_flip(self):
+        om = _mock_order_manager()
+        # compute_flip_order returns a valid DesiredOrder
+        from gridbot.types import DesiredOrder, TimeInForce
+        flip = DesiredOrder(
+            client_order_id="0xflip",
+            symbol="BTC-PERP",
+            price=50100.0,
+            size=0.1,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.ALO,
+        )
+        om.compute_flip_order = MagicMock(return_value=flip)
+
+        sup = _make_supervisor(order_manager=om)
+        symbol = sup._config.assets[0].symbol
+        sup._asset_states[symbol].grid_config = GridConfig(
+            symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+
+        await sup._route_fill(_fill(is_partial=False))
+
+        flips = sup._asset_states[symbol].pending_flips
+        assert len(flips) == 1
+        assert flips[0].price == 50100.0
+        assert flips[0].side == OrderSide.SELL
+
+    @pytest.mark.asyncio
+    async def test_fill_for_unknown_symbol_ignored(self):
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(pnl_monitor=pm)
+        await sup._route_fill(_fill(symbol="UNKNOWN-PERP"))
+        pm.record_fill.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Alerting
+# ---------------------------------------------------------------------------
+
+
+class TestAlerting:
+    @pytest.mark.asyncio
+    async def test_alert_callback_invoked(self):
+        cb = AsyncMock()
+        sup = _make_supervisor()
+        sup.set_alert_callback(cb)
+
+        await sup._send_alert("WARNING", "hello")
+        cb.assert_awaited_once_with("WARNING", "hello")
+
+    @pytest.mark.asyncio
+    async def test_alert_without_callback_does_not_raise(self):
+        sup = _make_supervisor()
+        await sup._send_alert("INFO", "no transport configured")
+
+
+# ---------------------------------------------------------------------------
+# Maintenance
+# ---------------------------------------------------------------------------
+
+
+class TestMaintenance:
+    @pytest.mark.asyncio
+    async def test_maintenance_marks_assets(self):
+        sup = _make_supervisor()
+        await sup._handle_maintenance()
+        for state in sup._asset_states.values():
+            assert state.bot_state == BotState.MAINTENANCE
+
+    @pytest.mark.asyncio
+    async def test_maintenance_error_does_not_count(self):
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(risk_manager=rm)
+        await sup._handle_maintenance()
+        rm.record_error.assert_called_once_with(is_maintenance=True)
+
+    def test_classifies_connection_errors_as_maintenance(self):
+        assert Supervisor._looks_like_maintenance(ConnectionError("refused"))
+        assert Supervisor._looks_like_maintenance(TimeoutError())
+        assert Supervisor._looks_like_maintenance(Exception("HTTP 503 Service Unavailable"))
+        assert Supervisor._looks_like_maintenance(Exception("connection refused"))
+        assert not Supervisor._looks_like_maintenance(ValueError("bad parse"))
+
+    @pytest.mark.asyncio
+    async def test_cycle_exits_maintenance_when_ws_healthy(self):
+        md = _mock_market_data()
+        md.is_ws_connected = MagicMock(return_value=True)
+        # last WS msg is 0ms ago (fresh)
+        md.get_last_ws_message_ms = MagicMock(return_value=int(9e18))
+        sup = _make_supervisor(market_data=md)
+        symbol = sup._config.assets[0].symbol
+        sup._asset_states[symbol].bot_state = BotState.MAINTENANCE
+
+        await sup._run_cycle(symbol, sup._config.assets[0])
+        assert sup._asset_states[symbol].bot_state == BotState.RUNNING
+
+
+# ---------------------------------------------------------------------------
+# Desync + skew routing
+# ---------------------------------------------------------------------------
+
+
+class TestDesync:
+    @pytest.mark.asyncio
+    async def test_records_desync_when_ws_stale(self):
+        rm = _mock_risk_manager()
+        md = _mock_market_data()
+        # Force a stale WS timestamp (>10s ago)
+        md.get_last_ws_message_ms = MagicMock(return_value=1)
+        sup = _make_supervisor(risk_manager=rm, market_data=md)
+
+        asset_cfg = sup._config.assets[0]
+        sup._asset_states[asset_cfg.symbol].bot_state = BotState.RUNNING
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        rm.record_desync.assert_called()
+
+
+class TestSkewReconcile:
+    @pytest.mark.asyncio
+    async def test_skew_inventory_still_runs_reconcile(self):
+        """SKEW_INVENTORY must not skip reconcile — GridEngine applies the skew."""
+        rm = _mock_risk_manager(action=RiskAction.SKEW_INVENTORY)
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        sup._asset_states[asset_cfg.symbol].bot_state = BotState.RUNNING
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+        om.reconcile.assert_awaited()  # reconcile must still run
+
+    @pytest.mark.asyncio
+    async def test_pause_grid_skips_reconcile_but_persists(self):
+        rm = _mock_risk_manager(action=RiskAction.PAUSE_GRID)
+        om = _mock_order_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(risk_manager=rm, order_manager=om, state_store=ss)
+
+        asset_cfg = sup._config.assets[0]
+        sup._asset_states[asset_cfg.symbol].bot_state = BotState.RUNNING
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        om.reconcile.assert_not_awaited()
+        om.reconcile_with_backstop.assert_not_awaited()
+        # Persistence and heartbeat still run
+        ss.save_bot_state.assert_awaited()
+        ss.update_heartbeat.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_updates_heartbeat(self):
+        ss = _mock_state_store()
+        sup = _make_supervisor(state_store=ss)
+        symbol = sup._config.assets[0].symbol
+        state = sup._asset_states[symbol]
+        state.bot_state = BotState.COOLDOWN
+        state.cooldown_until_ms = 2**62
+
+        await sup._run_cycle(symbol, sup._config.assets[0])
+        ss.update_heartbeat.assert_awaited()

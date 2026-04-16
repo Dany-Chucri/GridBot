@@ -1,5 +1,73 @@
 # Progress Log
 
+## 2026-04-15 — Phase 7 review fixes
+
+**Goal:** Fix 10 issues found during Phase 7 code review.
+
+**Changes:**
+- `_run_cycle` no longer returns early for SKEW_INVENTORY / REDUCE_ONLY / SKEW_FUNDING — those actions now fall through to grid compute + reconcile so GridEngine can apply the skew from state. PAUSE_GRID and SUPPRESS_NEW_ENTRIES still skip reconcile but persistence/heartbeat continue.
+- `_handle_risk_action` now takes a `RiskDecision` (with `details`) instead of raw action + reason. Returns `bool` telling caller whether to skip reconcile.
+- CANCEL_AND_FLATTEN branch now guards against overwriting DEAD when flatten fails (residual → DEAD is sticky, no silent resume via COOLDOWN).
+- CANCEL_AND_FLATTEN only bumps `last_breakout_ms` when the decision details indicate a breakout type (`distance`/`return_5m`/`vol_spike`). Vol-kill/drawdown-induced halts no longer piggy-back on breakout regime cooldown.
+- `_handle_maintenance` is now wired: main-loop exception handler classifies exceptions via `_looks_like_maintenance` (ConnectionError/TimeoutError/503/refused/maintenance strings) and transitions to MAINTENANCE instead of incrementing the error counter. `_run_cycle` exits MAINTENANCE when WS reconnects (via REST reconciliation).
+- Orphan recovery uses new `OrderManager.cancel_orders(symbol, orders)` for targeted oid-scoped cancel instead of `cancel_all_orders` (which would have killed legitimate matched orders too).
+- Added `MarketData.get_last_ws_message_ms()` and `is_ws_connected()` accessors. Supervisor feeds WS staleness to `RiskManager.record_desync` / `clear_desync` so the desync kill switch has a signal.
+- COOLDOWN cycles now update the heartbeat so long cooldowns don't stale the liveness check.
+- Made `GridEngine.classify_inventory_zone` public (was `_classify_inventory_zone`); supervisor + tests updated.
+- Moved inline `from gridbot.types import InventoryZone` in `_route_fill` to the top of `supervisor.py`.
+- Split `except (asyncio.CancelledError, Exception)` in fill-pump shutdown into separate handlers; generic Exception now logs.
+
+**Files modified:**
+- `gridbot/supervisor.py` — all fixes above
+- `gridbot/grid_engine.py` — `_classify_inventory_zone` → `classify_inventory_zone`
+- `gridbot/market_data.py` — added `get_last_ws_message_ms` / `is_ws_connected`
+- `gridbot/order_manager.py` — added `cancel_orders(symbol, orders)`
+- `tests/test_supervisor.py` — updated to new `_handle_risk_action` signature; added 8 new tests (DEAD-stickiness, non-breakout cooldown, maintenance classifier, cycle exits MAINTENANCE, WS desync, skew-still-reconciles, pause-persists, cooldown-heartbeat)
+- `tests/test_grid_engine.py` — rename `_classify_inventory_zone` → `classify_inventory_zone`
+
+**Status:** Complete (474 total tests pass, up from 466).
+
+**Notes:** `_looks_like_maintenance` pattern-matches on exception messages as a fallback because the Hyperliquid SDK surfaces HTTP errors as generic `Exception`. If the SDK gains richer error types later, prefer isinstance checks. Exit-from-MAINTENANCE is handled passively in `_run_cycle`: once WS reports connected + fresh, the next cycle transitions back to RUNNING after a REST reconciliation.
+
+---
+
+## 2026-04-13 — Phase 7: Supervisor
+
+**Goal:** Implement the orchestration layer: init, state recovery, pre-flight gate, main loop, cycle execution, risk routing, REST reconciliation, shutdown, maintenance handling, alerting, and fill routing.
+
+**Changes:**
+- Implemented full Supervisor lifecycle: `_initialize` (waits for first WS price, starts fill pump), `_recover_state` (loads persisted state, cancels orphans, resumes FLATTENING), `_preflight_checks` (hard gate on violations), `_main_loop`, `_run_cycle` (10-step data flow), `_shutdown` (cancel, no flatten)
+- Mapped each `RiskAction` to an operational response. `CANCEL_AND_FLATTEN` transitions to COOLDOWN with timer; `KILL` runs flatten then enters DEAD; skew/pause actions are no-ops at supervisor level (handled by GridEngine via state)
+- Added pluggable alert callback (`set_alert_callback`) so transport (Telegram/Discord/etc.) can be wired in without coupling
+- Added fill-event pump: drains `MarketData.fills` queue and routes each fill to `PnLMonitor.record_fill`, `StateStore.record_fill`, and generates a `PendingFlip` on full fills (partials don't flip, per design)
+- Uses `reconcile_with_backstop` to batch grid+backstop when position exists; falls back to plain `reconcile` otherwise
+- Per-asset timers for REST reconciliation and PnL cross-check (independent of main loop cadence, per 7.4 note)
+- Added `cycle_interval_seconds` (default 1.0) to `OperationalConfig`
+- Added `MarketData.fetch_account_equity()` — REST fetch of `marginSummary.accountValue` (required by cycle step 1)
+- Fixed supervisor's `GridEngine` construction to pass both `AssetConfig` and `OperationalConfig` (bug: previously passing only the asset config would fail at runtime)
+- Added Supervisor DI constructor kwargs (`state_store`, `market_data`, etc.) so tests and callers can inject mocks without reaching into private attrs
+
+**Files modified:**
+- `gridbot/supervisor.py` — Full implementation (all 12 subsections); replaces `NotImplementedError` stubs
+- `gridbot/config.py` — Added `cycle_interval_seconds` to `OperationalConfig`
+- `gridbot/market_data.py` — Added `fetch_account_equity()`
+- `docs/plans/implementation-plan.md` — Marked Phase 7 and all 12 subsections `[DONE]`
+- `REPO_MAP.md` — Added `test_supervisor.py`
+
+**Files added:**
+- `tests/test_supervisor.py` — 28 tests across 10 test classes: construction, initialization, pre-flight, state recovery, cycle dataflow (reconcile vs reconcile_with_backstop), cooldown gating, risk-action routing (KILL/CANCEL_AND_FLATTEN/PAUSE/SKEW), REST reconciliation, shutdown (no-flatten), fill routing (partial vs full), alerting callback, maintenance mode
+
+**Status:** Complete (466 total tests pass).
+
+**Notes:**
+- Phase 7 acceptance criterion "manual testnet smoke test" is deferred to Phase 8 (it requires a funded testnet wallet and real credentials — out of scope for the orchestration wiring itself).
+- Alert transport is logging-only for now; the pluggable callback API is in place for webhook integrations.
+- Deliberately did NOT add ad-hoc safety mechanisms (e.g., extra flatten retries, synthetic slippage floors). Followed "don't invent safety mechanisms not in design."
+- `_handle_maintenance` is wired but detection logic lives inside `MarketData` (WS reconnect/backoff). Supervisor exposes the state-transition entrypoint; future work can call it from an error handler in the main loop if/when REST/WS errors signal maintenance clearly (currently those errors just increment the error counter, which is correct).
+- Fill routing appends `PendingFlip` to local state and persists it. The next cycle's `GridEngine.compute_desired_orders` will merge the pending flip into the desired set via `_include_pending_flips`, and the reconciler will actually place it. This avoids a second "emit flip immediately" code path.
+
+---
+
 ## 2026-04-11 — Phase 6 second review fixes
 
 **Goal:** Fix 11 remaining issues found during second Phase 6 code review.

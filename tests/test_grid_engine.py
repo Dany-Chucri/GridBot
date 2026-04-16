@@ -310,32 +310,32 @@ class TestInventoryClassification:
 
     def test_normal_zone(self):
         eng = _engine()
-        assert eng._classify_inventory_zone(0.0) == InventoryZone.NORMAL
-        assert eng._classify_inventory_zone(0.3) == InventoryZone.NORMAL
-        assert eng._classify_inventory_zone(-0.3) == InventoryZone.NORMAL
+        assert eng.classify_inventory_zone(0.0) == InventoryZone.NORMAL
+        assert eng.classify_inventory_zone(0.3) == InventoryZone.NORMAL
+        assert eng.classify_inventory_zone(-0.3) == InventoryZone.NORMAL
 
     def test_soft_cap_zone(self):
         # soft_cap = 0.5 * 1.0 = 0.5
         eng = _engine()
-        assert eng._classify_inventory_zone(0.5) == InventoryZone.SOFT_CAP
-        assert eng._classify_inventory_zone(0.7) == InventoryZone.SOFT_CAP
-        assert eng._classify_inventory_zone(-0.5) == InventoryZone.SOFT_CAP
+        assert eng.classify_inventory_zone(0.5) == InventoryZone.SOFT_CAP
+        assert eng.classify_inventory_zone(0.7) == InventoryZone.SOFT_CAP
+        assert eng.classify_inventory_zone(-0.5) == InventoryZone.SOFT_CAP
 
     def test_hard_cap_zone(self):
         eng = _engine()
-        assert eng._classify_inventory_zone(1.0) == InventoryZone.HARD_CAP
-        assert eng._classify_inventory_zone(1.5) == InventoryZone.HARD_CAP
-        assert eng._classify_inventory_zone(-1.0) == InventoryZone.HARD_CAP
+        assert eng.classify_inventory_zone(1.0) == InventoryZone.HARD_CAP
+        assert eng.classify_inventory_zone(1.5) == InventoryZone.HARD_CAP
+        assert eng.classify_inventory_zone(-1.0) == InventoryZone.HARD_CAP
 
     def test_boundary_soft_cap(self):
         """Exactly at soft_cap boundary -> SOFT_CAP."""
         eng = _engine()
-        assert eng._classify_inventory_zone(0.5) == InventoryZone.SOFT_CAP
+        assert eng.classify_inventory_zone(0.5) == InventoryZone.SOFT_CAP
 
     def test_boundary_hard_cap(self):
         """Exactly at hard_cap boundary -> HARD_CAP."""
         eng = _engine()
-        assert eng._classify_inventory_zone(1.0) == InventoryZone.HARD_CAP
+        assert eng.classify_inventory_zone(1.0) == InventoryZone.HARD_CAP
 
 
 class TestInventorySkew:

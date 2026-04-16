@@ -22,7 +22,13 @@
       "Bash(python -m pytest --tb=short -q)",
       "Bash(python -m pytest tests/test_order_manager.py -v --tb=short)",
       "Bash(python -m pytest tests/test_order_manager.py -x --tb=short)",
-      "Bash(python -c \"from gridbot.order_manager import OrderManager; print\\('Import OK'\\)\")"
+      "Bash(python -c \"from gridbot.order_manager import OrderManager; print\\('Import OK'\\)\")",
+      "Bash(python -m pytest tests/test_supervisor.py -x -q)",
+      "Bash(python -m pytest -x -q)",
+      "Bash(python -c \"from gridbot.supervisor import Supervisor; from gridbot.main import main; print\\('imports ok'\\)\")",
+      "Bash(python -m pytest tests/test_supervisor.py -q)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -c ' *)"
     ]
   }
 }
