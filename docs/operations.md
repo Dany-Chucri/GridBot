@@ -24,10 +24,18 @@ Follow the phases defined in [design.md](design.md) section 10.5:
 
 | Phase | Duration | Key Criteria |
 |---|---|---|
-| Testnet soak | 48-72h | No kill switches, no state desync |
+| Testnet soak | 48-72h | No kill switches, no state desync. Procedure: [testnet-soak.md](testnet-soak.md) |
 | Mainnet tiny | 1-2 weeks | Min sizes, BTC only |
 | Mainnet small | 2-4 weeks | Small sizes, both assets |
 | Mainnet target | Ongoing | Full parameters, gradual scale-up |
+
+## Deployment
+
+VPS deployment uses the systemd unit at [`deploy/gridbot.service`](../deploy/gridbot.service) and the testnet config template at [`deploy/gridbot.testnet.yaml`](../deploy/gridbot.testnet.yaml). Full provisioning steps are in [testnet-soak.md](testnet-soak.md).
+
+## Post-Soak Analysis
+
+After the 48-72h window, run `scripts/post_soak_analysis.py` against the persisted SQLite DB to produce a summary report: fill profitability after fees, grid-step regime distribution, backstop coverage, flatten events, PnL reconciliation. Attach the report when promoting to the next testing phase.
 
 ## Alerting
 

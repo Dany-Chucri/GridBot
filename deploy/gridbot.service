@@ -1,0 +1,41 @@
+[Unit]
+Description=GridBot — Hyperliquid perpetual futures grid trading bot
+Documentation=https://github.com/dany-chucri/gridbot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gridbot
+Group=gridbot
+WorkingDirectory=/opt/gridbot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/gridbot/gridbot.env
+ExecStart=/opt/gridbot/.venv/bin/gridbot --config /etc/gridbot/gridbot.yaml --testnet --log-level INFO
+
+# Graceful shutdown: supervisor handles SIGTERM by cancelling orders and
+# persisting state (does NOT flatten — see design doc 4.5).
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Restart policy: do not auto-restart after a DEAD kill-switch trip.
+# A manual operator review is required per CLAUDE.md ("kill switch fired
+# — requires manual restart"). Restart on unexpected crashes only.
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=3
+StartLimitIntervalSec=600
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/gridbot/data /var/log/gridbot
+
+StandardOutput=append:/var/log/gridbot/gridbot.log
+StandardError=append:/var/log/gridbot/gridbot.err.log
+
+[Install]
+WantedBy=multi-user.target

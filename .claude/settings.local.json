@@ -28,7 +28,10 @@
       "Bash(python -c \"from gridbot.supervisor import Supervisor; from gridbot.main import main; print\\('imports ok'\\)\")",
       "Bash(python -m pytest tests/test_supervisor.py -q)",
       "Bash(python -m pytest -q)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_integration.py -x --tb=short)",
+      "Bash(python -m pytest tests/test_integration_failures.py -x --tb=short)",
+      "Bash(python -m pytest tests/test_post_soak_analysis.py -x --tb=short)"
     ]
   }
 }

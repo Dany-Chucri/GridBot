@@ -1,0 +1,37 @@
+# GridBot — testnet soak configuration (Phase 8.3)
+#
+# Reduced surface for the 48-72h soak per design doc 10.5:
+#   - Single asset (BTC) to minimize variance.
+#   - Min order sizes, fewer levels.
+#   - Standard cooldown / drawdown limits (do not loosen for soak).
+#
+# Copy to /etc/gridbot/gridbot.yaml on the VPS.
+
+testnet: true
+
+assets:
+  - symbol: BTC-PERP
+    leverage: 2.0
+    levels_per_side: 10          # reduced from default 25
+    capital_allocation: 0.60
+    max_abs_position: 0.1        # small cap — testnet liquidity thin
+    breakout_atr_distance: 4.5
+    cooldown_minutes: 30
+    max_daily_drawdown_pct: 0.03
+    max_weekly_drawdown_pct: 0.07
+    max_flatten_slippage_bps: 50
+
+portfolio:
+  total_risk_budget_pct: 0.10
+  btc_weight: 1.00               # single asset during soak
+  eth_weight: 0.00
+  portfolio_delta_mult: 0.75
+  pnl_crosscheck_interval_seconds: 60
+  pnl_divergence_threshold_usd: 50
+
+operational:
+  cycle_interval_seconds: 1.0
+  reconcile_interval_seconds: 5
+  max_consecutive_errors: 10
+  max_time_desynced_seconds: 30
+  stagger_initial_levels: 5
