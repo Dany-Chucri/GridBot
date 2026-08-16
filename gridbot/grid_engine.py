@@ -87,6 +87,15 @@ class GridEngine:
         order_size = self._compute_order_size(vol_metrics, state.account_equity)
         inventory_zone = self.classify_inventory_zone(position_size)
 
+        # Portfolio delta cap breach (section 9.2): this asset may be well
+        # within its own soft/hard cap individually, but combined same-side
+        # exposure with the other asset exceeds the stricter portfolio
+        # budget. Force the same hard-cap behavior (cancel exposure-
+        # increasing orders, reduce-only unwinds) regardless of this asset's
+        # own zone.
+        if state.force_reduce_only and inventory_zone != InventoryZone.HARD_CAP:
+            inventory_zone = InventoryZone.HARD_CAP
+
         # Core levels (always active in RANGE)
         core_levels = self._compute_core_levels(
             anchor, step_bps, vol_metrics, inventory_zone, position_size, order_size
@@ -567,10 +576,14 @@ class GridEngine:
             if inventory_zone == InventoryZone.HARD_CAP and flip.side == increasing_side:
                 reduce_only = True
 
-            cid = self.make_client_order_id(
-                grid_config.symbol, flip.price, flip.side,
-                f"flip:{flip.originating_fill_id}", grid_config.epoch,
-            )
+            # Must match OrderManager.compute_flip_order's cloid scheme exactly
+            # (not make_client_order_id's grid-level scheme) since that is the
+            # ID the flip order was actually placed with on the exchange, and
+            # it must stay stable across re-anchoring (section 7.6) — it is
+            # deliberately independent of grid_config_hash/epoch.
+            flip_id_raw = f"flip|{flip.originating_fill_id}|{grid_config.symbol}|{flip.side.value}"
+            digest = hashlib.sha256(flip_id_raw.encode()).hexdigest()
+            cid = f"0x{digest[:32]}"
 
             result.append(DesiredOrder(
                 client_order_id=cid,
@@ -600,9 +613,14 @@ class GridEngine:
         """Generate deterministic client order ID.
 
         client_order_id = hash(symbol, level_price, side, grid_config_hash, epoch)
+
+        Formatted as a Hyperliquid Cloid: "0x" + 32 hex chars (16 bytes),
+        matching the scheme OrderManager.compute_flip_order uses for flip
+        orders so both ID families are valid `Cloid.from_str()` inputs.
         """
         raw = f"{symbol}:{level_price}:{side.value}:{config_hash}:{epoch}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        return f"0x{digest[:32]}"
 
     @staticmethod
     def compute_config_hash(anchor: float, range_atr: float, step_bps: float) -> str:

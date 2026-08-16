@@ -220,6 +220,14 @@ class OrderManager:
             cancel_oids = await self._find_backstop_oids(symbol, backstop_cloid)
             extra_cancels.extend(cancel_oids)
 
+            # Also cancel the opposite direction's backstop in case the
+            # position flipped sign since the last update — otherwise that
+            # stale, differently-cloid'd trigger is orphaned on the exchange.
+            other_direction = "short" if direction == "long" else "long"
+            other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
+            other_cancel_oids = await self._find_backstop_oids(symbol, other_cloid)
+            extra_cancels.extend(other_cancel_oids)
+
             from hyperliquid.utils.types import Cloid
 
             extra_places.append({
@@ -420,7 +428,8 @@ class OrderManager:
                         None, self._client.bulk_orders, order_requests
                     )
                     alo_retries = await self._parse_place_result(
-                        result, pending, mid_price, attempt=attempt
+                        result, pending, mid_price, attempt=attempt,
+                        extra_requests=extra_raw if attempt == 0 else None,
                     )
                     if not alo_retries:
                         break
@@ -514,12 +523,21 @@ class OrderManager:
         placements: list[DesiredOrder],
         mid_price: float = 0.0,
         attempt: int = 0,
+        extra_requests: list[dict] | None = None,
     ) -> list[DesiredOrder]:
         """Parse placement batch result, handle ALO rejections.
+
+        `extra_requests` are non-grid raw placement dicts appended after
+        `placements` in the same batch (currently: the backstop trigger
+        order from reconcile_with_backstop/update_backstop). Their status
+        entries sit at statuses[len(placements):] and must be checked too —
+        otherwise a rejected backstop leg is silently invisible even though
+        the overall batch status reads "ok".
 
         Returns a list of nudged orders to retry (from ALO rejections).
         """
         retries: list[DesiredOrder] = []
+        extra_requests = extra_requests or []
 
         if not isinstance(result, dict):
             logger.warning("Unexpected place result type: %s", type(result))
@@ -559,8 +577,37 @@ class OrderManager:
                             order.price,
                             s,
                         )
+
+                # Check extra (backstop) statuses, which sit after the grid
+                # placements' statuses in the same response array. Design doc
+                # section 10.3 rates "backstop order update failed" as a
+                # Warning-severity alert (not Critical — the bot's own
+                # breakout/flatten logic is still the primary defense; the
+                # backstop is a fallback for when that fails too).
+                for j, extra in enumerate(extra_requests):
+                    idx = len(placements) + j
+                    if idx >= len(statuses):
+                        logger.warning(
+                            "Backstop order status missing from batch response "
+                            "for %s (idx=%d, statuses=%d) — position may be unprotected",
+                            extra.get("coin", "?"), idx, len(statuses),
+                        )
+                        continue
+                    s = statuses[idx]
+                    if not self._is_order_success(s):
+                        logger.warning(
+                            "Backstop order update failed for %s: %s — position "
+                            "may be unprotected (section 6.8)",
+                            extra.get("coin", "?"), s,
+                        )
         elif status == "err":
             logger.error("Place batch error: %s", result.get("response", ""))
+            if extra_requests:
+                logger.warning(
+                    "Backstop order update failed for batch errored — "
+                    "position may be unprotected: %s",
+                    result.get("response", ""),
+                )
 
         return retries
 
@@ -806,8 +853,16 @@ class OrderManager:
 
         from hyperliquid.utils.types import Cloid
 
-        # Cancel existing backstop first, then place new one
+        # Cancel existing backstop(s) first, then place new one. Cancel BOTH
+        # direction cloids, not just the current one: if position flipped
+        # sign since the last update (long->short or vice versa), the old
+        # direction's backstop has a different cloid and would otherwise be
+        # left orphaned on the exchange — violating "do not leave orphaned
+        # triggers" (section 6.8 item 3).
+        other_direction = "short" if direction == "long" else "long"
+        other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
         await self._cancel_existing_backstop(symbol, expected_cloid=backstop_cloid)
+        await self._cancel_existing_backstop(symbol, expected_cloid=other_cloid)
 
         # Place new backstop trigger order
         order_req = {

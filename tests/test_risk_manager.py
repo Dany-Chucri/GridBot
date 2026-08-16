@@ -325,6 +325,29 @@ class TestBreakoutDetection:
         )
         assert result is None
 
+    def test_vol_spike_breakout_arms_recovery_timer(self):
+        """A vol-spike breakout (fired from _check_breakout, which always
+        runs before _check_volatility in evaluate()'s check order) must still
+        arm the recovery timer, or the mandatory sustained-normalization wait
+        (section 6.4) never starts once vol drops back below pause."""
+        rm = _rm()
+        _seed_vol_history(rm, vol_low=0.30, vol_high=0.70)
+        cfg = _cfg(vol_kill_percentile=0.95)
+        result = rm._check_breakout(
+            mid_price=50000.0, anchor=50000.0, atr=500.0,
+            vol_metrics=_vol(realized_vol=0.71),
+            config=cfg,
+        )
+        assert result is not None
+        assert result.details["type"] == "vol_spike"
+        assert "BTC-PERP" in rm._vol_recovery_start
+
+        # Vol now back below pause — _check_volatility must enforce recovery,
+        # not resume immediately.
+        result2 = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.05), cfg)
+        assert result2 is not None
+        assert result2.action == RiskAction.PAUSE_GRID
+
 
 # ---------------------------------------------------------------------------
 # TestVolatilityCircuitBreakers

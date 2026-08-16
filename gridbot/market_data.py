@@ -29,9 +29,11 @@ from gridbot.types import Fill, OpenOrder, OrderSide, Position, VolMetrics
 
 logger = logging.getLogger(__name__)
 
-# Hyperliquid fee rates (standard tier)
-_MAKER_FEE_RATE = 0.0002  # 0.02% = 0.2 bps
-_TAKER_FEE_RATE = 0.0005  # 0.05% = 0.5 bps
+# Hyperliquid fee rates (standard tier). Maker rate matches design.md
+# section 5.4's conservative maker_fee estimate (~0.2 bps) used in the grid
+# step floor formula — was previously 10x too high (0.0002 = 2 bps).
+_MAKER_FEE_RATE = 0.00002  # 0.002% = 0.2 bps
+_TAKER_FEE_RATE = 0.0005   # 0.05% = 5 bps
 
 # Conservative defaults when insufficient data
 _DEFAULT_REALIZED_VOL = 1.0  # 100% annualized
@@ -562,6 +564,54 @@ class MarketData:
             ))
         return result
 
+    async def fetch_fills(self, symbol: str, since_ms: int) -> list[Fill]:
+        """REST fetch of fills for `symbol` since `since_ms` (epoch ms).
+
+        Used by restart recovery (section 4.4) to classify orders that were
+        in local state but are missing from the exchange snapshot — the
+        local state was stale (bot was down) and the order may have filled
+        rather than merely been cancelled.
+        """
+        if not self._info or not self._config.wallet_address:
+            return []
+
+        loop = asyncio.get_running_loop()
+        try:
+            raw_fills = await loop.run_in_executor(
+                None,
+                partial(self._info.user_fills_by_time, self._config.wallet_address, since_ms),
+            )
+        except Exception:
+            logger.error("Failed to fetch fills for %s", symbol, exc_info=True)
+            return []
+
+        coin = self._to_coin(symbol).upper()
+        result: list[Fill] = []
+        for f in raw_fills:
+            if f.get("coin", "").upper() != coin:
+                continue
+            side = OrderSide.BUY if f.get("side") == "B" else OrderSide.SELL
+            price = float(f.get("px", "0"))
+            size = float(f.get("sz", "0"))
+            is_maker = not f.get("crossed", False)
+            fee_rate = _MAKER_FEE_RATE if is_maker else _TAKER_FEE_RATE
+            oid = f.get("oid")
+            ts = int(f.get("time", 0))
+            result.append(Fill(
+                fill_id=f.get("hash") or f"{oid}-{ts}",
+                order_id=oid,
+                client_order_id="",  # not returned by userFillsByTime
+                symbol=symbol,
+                price=price,
+                size=size,
+                side=side,
+                fee=size * price * fee_rate,
+                timestamp_ms=ts,
+                is_maker=is_maker,
+                is_partial=False,
+            ))
+        return result
+
     async def fetch_position(self, symbol: str) -> Position | None:
         """REST fetch of current position — backup consistency check."""
         if not self._info or not self._config.wallet_address:
@@ -651,8 +701,16 @@ class MarketData:
         return self._mid_prices.get(symbol, 0.0)
 
     def get_mark_price(self, symbol: str) -> float:
-        """Latest mark price for the asset."""
-        return self._mark_prices.get(symbol, 0.0)
+        """Latest mark price for the asset.
+
+        Falls back to mid price when mark hasn't arrived yet (before the
+        first activeAssetCtx message) or the subscription drops, per design
+        doc section 4.1: "If only one is available, use mid for signals."
+        """
+        mark = self._mark_prices.get(symbol, 0.0)
+        if mark > 0:
+            return mark
+        return self._mid_prices.get(symbol, 0.0)
 
     def get_funding_rate(self, symbol: str) -> float:
         """Latest funding rate for the asset."""

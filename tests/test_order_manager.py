@@ -1069,6 +1069,38 @@ class TestBackstop:
         # And then place a new one
         om._client.bulk_orders.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_backstop_cancels_stale_opposite_direction_on_flip(self):
+        """If position flipped sign since the last update, the OLD
+        direction's backstop (different cloid) must also be cancelled, not
+        just the current direction's — otherwise it's orphaned."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+
+        long_cloid = OrderManager._generate_backstop_id("BTC-PERP", "long", "")
+        short_cloid = OrderManager._generate_backstop_id("BTC-PERP", "short", "")
+        # A stale LONG backstop is still resting on the exchange even though
+        # the position is now SHORT.
+        om._info.frontend_open_orders.return_value = [
+            {"coin": "BTC", "oid": 42, "cloid": long_cloid}
+        ]
+        om._client.bulk_cancel.return_value = {"status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success"]}}}
+        om._client.bulk_orders.return_value = {"status": "ok"}
+
+        pos = _pos(size=-0.5)  # now short
+        await om.update_backstop("BTC-PERP", pos, 50000.0, 500.0, 4.5, 1.0)
+
+        # Two cancel lookups happen (current direction, then opposite); the
+        # stale long-direction order must actually get cancelled.
+        cancelled_oids = [
+            req["oid"]
+            for call in om._client.bulk_cancel.call_args_list
+            for req in call[0][0]
+        ]
+        assert 42 in cancelled_oids
+
 
 # ===========================================================================
 # Test: Parse Results
@@ -1750,6 +1782,40 @@ class TestReconcileWithBackstop:
         all_placed = place_calls[0]
         has_trigger = any("trigger" in str(r.get("order_type", "")) for r in all_placed)
         assert has_trigger
+
+    @pytest.mark.asyncio
+    async def test_rejected_backstop_leg_is_logged(self, caplog):
+        """A rejected backstop leg must be surfaced even though the overall
+        batch status is 'ok' — this was previously silently swallowed
+        because the status-parsing loop stopped at len(grid placements)."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._info.frontend_open_orders.return_value = []
+
+        om._client.bulk_cancel = MagicMock(
+            return_value={"status": "ok", "response": {"type": "cancel", "data": {"statuses": []}}}
+        )
+
+        def mock_place(reqs):
+            # Grid order succeeds, backstop (2nd request) is rejected.
+            statuses = [{"resting": {"oid": 1}}, {"error": "InsufficientMargin"}]
+            return {"status": "ok", "response": {"type": "order", "data": {"statuses": statuses}}}
+
+        om._client.bulk_orders = mock_place
+
+        desired = [_desired(client_order_id="0x" + "b" * 32, price=50000.0)]
+        pos = _pos(size=0.5)
+
+        with caplog.at_level("WARNING"):
+            await om.reconcile_with_backstop(
+                "BTC-PERP", desired, [], mid_price=50000.0,
+                position=pos, anchor=50000.0, atr=500.0,
+                breakout_atr_distance=4.5, backstop_buffer_atr=1.0, config_hash="test",
+            )
+
+        assert any("Backstop order update failed" in r.message for r in caplog.records)
 
 
 # ===========================================================================

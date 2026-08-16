@@ -730,6 +730,17 @@ class TestMarkPrice:
         await md._dispatch_asset_ctx(msg)
         assert md.get_mark_price("BTC-PERP") == 60000.0
 
+    def test_falls_back_to_mid_price_when_no_mark_yet(self, md: MarketData):
+        md._mid_prices["BTC-PERP"] = 59500.0
+        assert md.get_mark_price("BTC-PERP") == pytest.approx(59500.0)
+
+    @pytest.mark.asyncio
+    async def test_prefers_mark_price_once_available(self, md: MarketData):
+        md._mid_prices["BTC-PERP"] = 59500.0
+        msg = {"data": {"coin": "BTC", "ctx": {"markPx": "61234.5"}}}
+        await md._dispatch_asset_ctx(msg)
+        assert md.get_mark_price("BTC-PERP") == pytest.approx(61234.5)
+
     @pytest.mark.asyncio
     async def test_stores_funding_rate(self, md: MarketData):
         msg = {"data": {"coin": "BTC", "ctx": {"markPx": "61000.0", "funding": "0.0003"}}}
@@ -953,6 +964,49 @@ class TestRESTFetches:
     async def test_fetch_open_orders_no_info(self, md: MarketData):
         orders = await md.fetch_open_orders("BTC-PERP")
         assert orders == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_fills(self, md_with_info: MarketData):
+        md = md_with_info
+        md._info.user_fills_by_time = MagicMock(return_value=[
+            {
+                "coin": "BTC", "side": "B", "px": "59000.0", "sz": "0.5",
+                "oid": 100, "time": 123_456, "crossed": False, "hash": "0xh1",
+            },
+            {
+                "coin": "ETH", "side": "A", "px": "3000.0", "sz": "2.0",
+                "oid": 101, "time": 123_500, "crossed": True,
+            },
+        ])
+        fills = await md.fetch_fills("BTC-PERP", since_ms=100_000)
+        assert len(fills) == 1
+        f = fills[0]
+        assert f.order_id == 100
+        assert f.symbol == "BTC-PERP"
+        assert f.price == 59000.0
+        assert f.size == 0.5
+        assert f.side == OrderSide.BUY
+        assert f.is_maker is True
+        assert f.fee == pytest.approx(0.5 * 59000.0 * _MAKER_FEE_RATE)
+        md._info.user_fills_by_time.assert_called_once_with(
+            "0x" + "ab" * 20, 100_000
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_fills_taker_fee(self, md_with_info: MarketData):
+        md = md_with_info
+        md._info.user_fills_by_time = MagicMock(return_value=[
+            {"coin": "BTC", "side": "A", "px": "59000.0", "sz": "0.5",
+             "oid": 101, "time": 123_500, "crossed": True},
+        ])
+        fills = await md.fetch_fills("BTC-PERP", since_ms=0)
+        assert fills[0].is_maker is False
+        assert fills[0].side == OrderSide.SELL
+        assert fills[0].fee == pytest.approx(0.5 * 59000.0 * _TAKER_FEE_RATE)
+
+    @pytest.mark.asyncio
+    async def test_fetch_fills_no_info(self, md: MarketData):
+        assert await md.fetch_fills("BTC-PERP", since_ms=0) == []
 
     @pytest.mark.asyncio
     async def test_fetch_position(self, md_with_info: MarketData):

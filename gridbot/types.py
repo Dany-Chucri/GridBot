@@ -170,3 +170,4 @@ class AssetState:
     stagger_placed_count: int = 0
     drift_start_ms: int | None = None
     anchor_epoch: int = 0
+    force_reduce_only: bool = False  # Portfolio delta cap breach (section 9.2)

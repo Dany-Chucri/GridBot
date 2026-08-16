@@ -139,9 +139,11 @@ class TestClientOrderId:
         id2 = GridEngine.make_client_order_id("BTC-PERP", 50000.0, OrderSide.SELL, "abc123", 1)
         assert id1 != id2
 
-    def test_id_is_16_chars(self):
+    def test_id_is_valid_cloid_format(self):
         cid = GridEngine.make_client_order_id("BTC-PERP", 50000.0, OrderSide.BUY, "abc123", 1)
-        assert len(cid) == 16
+        assert cid.startswith("0x")
+        assert len(cid) == 34
+        int(cid[2:], 16)  # must be valid hex
 
 
 class TestConfigHash:
@@ -807,6 +809,24 @@ class TestComputeDesiredOrders:
         state = _state(regime=Regime.RANGE)
         orders = eng.compute_desired_orders(state)
         assert len(orders) > 0
+
+    def test_force_reduce_only_treats_zone_as_hard_cap(self):
+        """Section 9.2: a portfolio delta cap breach must force hard-cap
+        behavior (no exposure-increasing orders) even when this asset's own
+        position is well within its individual soft/hard cap."""
+        eng = _engine()
+        state = _state(regime=Regime.RANGE, position_size=0.1)  # well under caps
+        state.force_reduce_only = True
+        orders = eng.compute_desired_orders(state)
+        # Long position -> BUY is exposure-increasing; none should remain
+        assert all(o.side != OrderSide.BUY for o in orders)
+
+    def test_force_reduce_only_false_allows_full_grid(self):
+        eng = _engine()
+        state = _state(regime=Regime.RANGE, position_size=0.1)
+        state.force_reduce_only = False
+        orders = eng.compute_desired_orders(state)
+        assert any(o.side == OrderSide.BUY for o in orders)
 
     def test_all_orders_have_alo(self):
         eng = _engine()

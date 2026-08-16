@@ -32,6 +32,12 @@ _168H_MS = 168 * 60 * 60 * 1000
 _48H_MS = 48 * 60 * 60 * 1000
 _7D_MS = 7 * 24 * 60 * 60 * 1000
 
+# Taker fee estimate for the worst-case-loss preflight formula (section 6.3:
+# worst_case_loss = grid_range*position + flatten_slippage + taker_fees).
+# Mirrors MarketData._TAKER_FEE_RATE (0.05%); kept local rather than imported
+# to avoid coupling this pure risk-check module to MarketData.
+_TAKER_FEE_BPS = 5.0
+
 
 class RiskAction(Enum):
     """Actions the RiskManager can recommend."""
@@ -245,6 +251,12 @@ class RiskManager:
         # Vol spike: realized vol > vol_kill_percentile
         vol_percentile = self._compute_vol_percentile(config.symbol, vol_metrics.realized_vol)
         if vol_percentile is not None and vol_percentile > config.vol_kill_percentile:
+            # This duplicates _check_volatility's kill threshold and always
+            # fires first in evaluate()'s check order (breakout before vol),
+            # so _check_volatility's kill branch is never reached for this
+            # event. Arm the recovery timer here too, or the mandatory
+            # sustained-normalization wait (section 6.4) never starts.
+            self._vol_recovery_start[config.symbol] = None
             return RiskDecision(
                 action=RiskAction.CANCEL_AND_FLATTEN,
                 reason=f"vol spike: percentile {vol_percentile:.2f} > {config.vol_kill_percentile}",
@@ -640,14 +652,14 @@ class RiskManager:
                 + config.max_flatten_slippage_bps / 10000 * config.max_abs_position  # flatten slippage
             )
             # Normalize: this is a price-relative loss. Convert to equity fraction.
-            # Approximate: worst_case_loss ≈ grid_range_frac * max_position_usd + flatten_slippage
+            # Approximate: worst_case_loss ≈ grid_range_frac * max_position_usd + flatten_slippage + taker_fees
             # where max_position_usd ≈ max_abs_position * price. Without price, we use
-            # the fraction-based approach: loss_pct = grid_range_frac + flatten_slippage_bps/10000
+            # the fraction-based approach: loss_pct = grid_range_frac + flatten_slippage_bps/10000 + taker_fee_bps/10000
             # applied to the notional of max_abs_position.
             # Since we can't get price here, use the equity-relative budget check:
-            # (grid_range_frac + flatten_slippage_frac) * leverage * capital_allocation
+            # (grid_range_frac + flatten_slippage_frac + taker_fee_frac) * leverage * capital_allocation
             loss_pct_of_equity = (
-                (grid_range_frac + config.max_flatten_slippage_bps / 10000)
+                (grid_range_frac + config.max_flatten_slippage_bps / 10000 + _TAKER_FEE_BPS / 10000)
                 * config.leverage
                 * config.capital_allocation
             )

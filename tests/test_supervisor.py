@@ -68,6 +68,7 @@ def _mock_market_data(mid: float = 50000.0) -> MagicMock:
     md.fetch_account_equity = AsyncMock(return_value=100_000.0)
     md.fetch_open_orders = AsyncMock(return_value=[])
     md.fetch_position = AsyncMock(return_value=None)
+    md.fetch_fills = AsyncMock(return_value=[])
     md.fetch_exchange_pnl = AsyncMock(return_value=0.0)
     md.fetch_book_depth = AsyncMock(return_value=10.0)
     md.get_mid_price = MagicMock(return_value=mid)
@@ -127,6 +128,7 @@ def _mock_state_store() -> MagicMock:
     ss.save_pending_flips = AsyncMock()
     ss.save_bot_state = AsyncMock()
     ss.update_heartbeat = AsyncMock()
+    ss.get_last_heartbeat = AsyncMock(return_value=None)
     ss.record_fill = AsyncMock()
     return ss
 
@@ -286,6 +288,80 @@ class TestRecovery:
         assert args[1][0].client_order_id == "0xunknown"
 
     @pytest.mark.asyncio
+    async def test_routes_missed_fill_for_order_that_filled_while_down(self):
+        """Design section 4.4 step 4: an order in local state but missing
+        from the exchange snapshot must be checked against the fills
+        endpoint — if it filled while the bot was down, that fill must
+        still be routed to PnLMonitor/StateStore/flip logic, not dropped."""
+        symbol = "BTC-PERP"
+        vanished_order = OpenOrder(
+            order_id=55, client_order_id="0xvanished" + "0" * 24,
+            symbol=symbol, price=49500.0, size=0.1, remaining=0.1,
+            side=OrderSide.BUY,
+        )
+        persisted = AssetState(
+            symbol=symbol, bot_state=BotState.RUNNING,
+            open_orders=[vanished_order],
+            grid_config=GridConfig(
+                symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+            ),
+        )
+        ss = _mock_state_store()
+        ss.load_bot_state = AsyncMock(return_value=persisted)
+
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(return_value=[])  # order no longer resting
+        md.fetch_position = AsyncMock(return_value=Position(
+            symbol=symbol, size=0.1, avg_entry_price=49500.0, unrealized_pnl=0.0,
+        ))
+        md.fetch_fills = AsyncMock(return_value=[Fill(
+            fill_id="0xh1", order_id=55, client_order_id="",
+            symbol=symbol, price=49500.0, size=0.1, side=OrderSide.BUY,
+            fee=0.5, timestamp_ms=999, is_maker=True, is_partial=False,
+        )])
+
+        om = _mock_order_manager()
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(market_data=md, order_manager=om, state_store=ss, pnl_monitor=pm)
+
+        await sup._recover_state()
+
+        pm.record_fill.assert_called_once()
+        routed_fill = pm.record_fill.call_args[0][0]
+        assert routed_fill.order_id == 55
+        assert routed_fill.client_order_id == "0xvanished" + "0" * 24
+        ss.record_fill.assert_awaited_once()
+        om.compute_flip_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_fill_match_for_vanished_order_is_a_noop(self):
+        """A vanished order with no matching fill was simply cancelled —
+        no fill should be synthesized/routed."""
+        symbol = "BTC-PERP"
+        vanished_order = OpenOrder(
+            order_id=55, client_order_id="0xvanished" + "0" * 24,
+            symbol=symbol, price=49500.0, size=0.1, remaining=0.1,
+            side=OrderSide.BUY,
+        )
+        persisted = AssetState(
+            symbol=symbol, bot_state=BotState.RUNNING,
+            open_orders=[vanished_order],
+        )
+        ss = _mock_state_store()
+        ss.load_bot_state = AsyncMock(return_value=persisted)
+
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(return_value=[])
+        md.fetch_fills = AsyncMock(return_value=[])  # nothing filled — was cancelled
+
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(market_data=md, state_store=ss, pnl_monitor=pm)
+
+        await sup._recover_state()
+
+        pm.record_fill.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_resumes_flattening_when_position_remains(self):
         persisted = AssetState(
             symbol="BTC-PERP", bot_state=BotState.FLATTENING,
@@ -356,6 +432,88 @@ class TestCycle:
         await sup._run_cycle(asset_cfg.symbol, asset_cfg)
         om.reconcile_with_backstop.assert_awaited_once()
         om.reconcile.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_trend_regime_flattens_and_enters_cooldown(self):
+        """Design section 8.1: TREND regime must cancel orders, flatten any
+        inventory, and enter cooldown — even when RiskManager.evaluate()
+        itself returns CONTINUE (e.g. a slow grind away from the moving
+        average that hasn't crossed the breakout-distance or vol-spike
+        thresholds evaluate() checks independently)."""
+        rm = _mock_risk_manager()
+        rm.detect_regime = MagicMock(return_value=Regime.TREND)
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.position = Position(
+            symbol=asset_cfg.symbol, size=0.2,
+            avg_entry_price=50000.0, unrealized_pnl=0.0,
+        )
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        om.cancel_all_orders.assert_awaited()
+        om.execute_flatten.assert_awaited()
+        assert state.bot_state == BotState.COOLDOWN
+        assert state.cooldown_until_ms is not None
+        # Not a breakout-type cause — shouldn't bump the breakout cooldown timer
+        assert state.last_breakout_ms is None
+
+    @pytest.mark.asyncio
+    async def test_trend_regime_does_not_override_more_severe_action(self):
+        """A CANCEL_AND_FLATTEN/KILL from evaluate() (e.g. drawdown) must not
+        be masked by the regime-TREND override — only CONTINUE is eligible."""
+        rm = _mock_risk_manager(action=RiskAction.KILL, reason="drawdown")
+        rm.detect_regime = MagicMock(return_value=Regime.TREND)
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.bot_state == BotState.DEAD
+
+    @pytest.mark.asyncio
+    async def test_portfolio_delta_breach_forces_reduce_only(self):
+        """Design section 9.2: a portfolio-level delta breach across
+        correlated assets must force reduce-only behavior even when this
+        asset's own per-asset checks all pass (evaluate() -> CONTINUE)."""
+        rm = _mock_risk_manager()
+        rm.check_portfolio_delta = MagicMock(return_value=True)
+        sup = _make_supervisor(risk_manager=rm)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.position = Position(
+            symbol=asset_cfg.symbol, size=0.1,
+            avg_entry_price=50000.0, unrealized_pnl=0.0,
+        )
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        rm.check_portfolio_delta.assert_called_once()
+        assert state.force_reduce_only is True
+
+    @pytest.mark.asyncio
+    async def test_portfolio_delta_ok_leaves_reduce_only_unset(self):
+        rm = _mock_risk_manager()
+        rm.check_portfolio_delta = MagicMock(return_value=False)
+        sup = _make_supervisor(risk_manager=rm)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.force_reduce_only is False
 
     @pytest.mark.asyncio
     async def test_cooldown_respected(self):
@@ -541,6 +699,44 @@ class TestRestReconciliation:
 
         await sup._rest_reconciliation(symbol)
         assert sup._asset_states[symbol].position == rest_pos
+
+    @pytest.mark.asyncio
+    async def test_order_divergence_sends_alert(self):
+        """Design section 10.3: reconcile discrepancy must alert, not just log."""
+        symbol = "BTC-PERP"
+        rest_order = OpenOrder(
+            order_id=1, client_order_id="0xabc", symbol=symbol,
+            price=49000.0, size=0.1, remaining=0.1, side=OrderSide.BUY,
+        )
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(return_value=[rest_order])
+        sup = _make_supervisor(market_data=md)
+        sup._asset_states[symbol].open_orders = []
+
+        alerts = []
+        sup._alert_callback = AsyncMock(side_effect=lambda sev, msg: alerts.append((sev, msg)))
+
+        await sup._rest_reconciliation(symbol)
+
+        assert any("divergence" in msg for _, msg in alerts)
+
+    @pytest.mark.asyncio
+    async def test_position_divergence_sends_alert(self):
+        symbol = "BTC-PERP"
+        rest_pos = Position(
+            symbol=symbol, size=0.3, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=rest_pos)
+        sup = _make_supervisor(market_data=md)
+
+        alerts = []
+        sup._alert_callback = AsyncMock(side_effect=lambda sev, msg: alerts.append((sev, msg)))
+
+        await sup._rest_reconciliation(symbol)
+
+        assert any("divergence" in msg for _, msg in alerts)
 
 
 # ---------------------------------------------------------------------------

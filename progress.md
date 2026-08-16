@@ -1,5 +1,38 @@
 # Progress Log
 
+## 2026-08-16 — Comprehensive design-vs-implementation audit fixes
+
+**Goal:** Fix all 12 issues found during a fresh full-codebase review against `docs/design.md`, run via 5 parallel section-by-section audits (GridEngine, RiskManager, OrderManager, MarketData, Supervisor/StateStore/PnLMonitor) after 474 tests and 7 prior review rounds were already in place.
+
+**Changes:**
+- **[Critical]** `GridEngine.make_client_order_id` produced a bare 16-char hex string with no `0x` prefix — not a valid Hyperliquid `Cloid`, meaning the bot would crash on its very first grid order placement. Fixed to `0x` + 32 hex chars, matching `OrderManager.compute_flip_order`'s existing scheme.
+- Pending-flip client order IDs were recomputed each cycle via `GridEngine.make_client_order_id` using a different hash scheme (and the current epoch) than the ID the flip order was actually placed with (`OrderManager.compute_flip_order`'s `flip|fill_id|symbol|side` scheme). Fixed `_include_pending_flips` to use the identical formula, which is also correctly epoch/config-hash-independent so it survives re-anchoring per section 7.6.
+- Vol-kill's recovery timer (`_vol_recovery_start`) was only armed inside `_check_volatility`'s kill branch, but `_check_breakout`'s duplicate vol-spike check always fires first in `evaluate()`'s check order, so the timer was never armed via that path — the grid could resume with zero elapsed recovery time after a vol-kill cooldown. Now armed from both paths.
+- `RiskManager.preflight_check`'s worst-case-loss formula omitted the `taker_fees` term present in design section 6.3's formula. Added a local `_TAKER_FEE_BPS` constant (mirrors `MarketData._TAKER_FEE_RATE`) and included it.
+- `OrderManager._parse_place_result` only checked batch-response statuses up to `len(grid placements)`, silently skipping the appended backstop order's status — a rejected backstop leg produced no log/alert even though the batch's top-level status read "ok". Added explicit status checking (and design-section-10.3-matched WARNING logging) for the backstop leg.
+- `OrderManager.update_backstop`/`reconcile_with_backstop` only cancelled the *current* position direction's backstop cloid. A long/short flip left the old direction's backstop orphaned on the exchange (different cloid). Now cancels both direction cloids on every update.
+- `Supervisor._recover_state` never checked orders that were in local state but missing from the exchange snapshot against the fills endpoint (design section 4.4 step 4) — a fill that occurred while the bot was down was silently dropped (no flip, no PnL record). Added `MarketData.fetch_fills(symbol, since_ms)` (wraps HL SDK's `user_fills_by_time`) and wired it into recovery: vanished local orders are matched by `oid` against fetched fills and routed through the normal `_route_fill` path if a match exists.
+- `Supervisor._rest_reconciliation` only logged REST/WS order and position divergence; design section 10.3 rates this a High-severity alert. Added `_send_alert` calls (mapped to this module's existing WARNING convention for the High tier, matching the precedent already used for breakout-flatten alerts).
+- TREND regime (from `RiskManager.detect_regime`) stopped the grid from quoting (via `GridEngine` returning `[]`) but never flattened inventory or entered cooldown, per design section 8.1. `RiskManager.evaluate()` has no regime awareness, so a slow grind away from the moving average that never crosses the breakout-distance/vol-spike thresholds went unhandled. `_run_cycle` now synthesizes a `CANCEL_AND_FLATTEN` decision (reusing the existing handler, not a new mechanism) when regime reads TREND and `evaluate()` itself returned CONTINUE. HIGH_VOL was confirmed already correctly handled via `_check_volatility`'s independent `PAUSE_GRID` path (section 6.4's "existing orders remain" behavior).
+- `RiskManager.check_portfolio_delta` (section 9.2 portfolio delta cap) was implemented and tested but never called anywhere. **Flagged to the user first**, since design's stated remedy ("tighten both assets' soft caps proportionally... asset with larger same-side exposure gets tightened more") has no concrete formula — implementing one would mean inventing an unspecified mechanism. User chose the conservative option: symmetric REDUCE_ONLY for both assets on breach. Implemented via a new `AssetState.force_reduce_only` flag that `GridEngine.compute_desired_orders` treats as an override to `InventoryZone.HARD_CAP`, set by `Supervisor` each cycle from a portfolio-wide `check_portfolio_delta` call.
+- `MarketData._MAKER_FEE_RATE` was `0.0002` (2 bps) — 10x design section 5.4's documented ~0.2 bps maker fee estimate, and the in-code comment mislabeled it too. Fixed to `0.00002`.
+- `MarketData.get_mark_price` returned a bare `0.0` with no fallback before the first `activeAssetCtx` message arrived. Design section 4.1 requires falling back to mid price. Added the fallback (confirmed inert today since `RiskManager` derives mark price independently, but a latent gap for any future caller).
+
+**Files modified:**
+- `gridbot/grid_engine.py` — cloid format fix, pending-flip ID scheme fix, `force_reduce_only` override
+- `gridbot/risk_manager.py` — vol-kill recovery timer fix, taker_fees term in preflight formula
+- `gridbot/order_manager.py` — backstop batch-status checking, dual-direction backstop cancellation
+- `gridbot/supervisor.py` — TREND regime handling, portfolio delta cap wiring, REST reconciliation alerts, restart fills-endpoint recovery
+- `gridbot/market_data.py` — fee constant fix, mark price fallback, new `fetch_fills` method
+- `gridbot/types.py` — added `AssetState.force_reduce_only`
+- `tests/test_grid_engine.py`, `tests/test_risk_manager.py`, `tests/test_order_manager.py`, `tests/test_supervisor.py`, `tests/test_market_data.py`, `tests/test_integration.py` — regression tests for each fix above; two integration test mock/assertion updates required to accommodate the new (correct) alert/fetch_fills behavior
+
+**Status:** Complete (516 total tests pass, up from 507).
+
+**Notes:** The portfolio-delta-cap decision (symmetric REDUCE_ONLY vs. a bespoke proportional-tightening formula) was an explicit user choice, not an inferred one — flagging it first avoided inventing a risk mechanism the design doc only gestures at narratively. All other fixes were unambiguous implementation bugs against a fully-specified design.
+
+---
+
 ## 2026-04-15 — Phase 7 review fixes
 
 **Goal:** Fix 10 issues found during Phase 7 code review.

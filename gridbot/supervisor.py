@@ -205,8 +205,48 @@ class Supervisor:
                 await self._order_manager.cancel_orders(symbol, orphans)
                 exchange_orders = await self._market_data.fetch_open_orders(symbol)
 
+            # Orders in local state but no longer on the exchange snapshot
+            # must be checked against the fills endpoint (section 4.4 step
+            # 4): they may have filled while the bot was down, not merely
+            # been cancelled. Without this, a fill during downtime is
+            # silently dropped — no flip is ever placed for that level and
+            # local PnL under-counts it.
+            exchange_cloids = {o.client_order_id for o in exchange_orders if o.client_order_id}
+            vanished = [
+                o for o in state.open_orders
+                if o.client_order_id and o.client_order_id not in exchange_cloids
+            ]
+
             state.open_orders = exchange_orders
             state.position = exchange_position
+
+            if vanished:
+                last_hb = await self._state_store.get_last_heartbeat(symbol)
+                since_ms = last_hb if last_hb is not None else 0
+                fills = await self._market_data.fetch_fills(symbol, since_ms)
+                fills_by_oid = {f.order_id: f for f in fills}
+                for order in vanished:
+                    matched = fills_by_oid.get(order.order_id)
+                    if matched is None:
+                        continue
+                    logger.warning(
+                        "Order %d for %s filled while bot was down — routing missed fill",
+                        order.order_id, symbol,
+                    )
+                    missed_fill = Fill(
+                        fill_id=matched.fill_id,
+                        order_id=matched.order_id,
+                        client_order_id=order.client_order_id,
+                        symbol=symbol,
+                        price=matched.price,
+                        size=matched.size,
+                        side=matched.side,
+                        fee=matched.fee,
+                        timestamp_ms=matched.timestamp_ms,
+                        is_maker=matched.is_maker,
+                        is_partial=False,
+                    )
+                    await self._route_fill(missed_fill)
 
             # 4. Resume FLATTENING if persisted and position remains
             if state.bot_state == BotState.FLATTENING:
@@ -352,6 +392,42 @@ class Supervisor:
         )
         decision = self._risk_manager.evaluate(state)
 
+        # RiskManager.evaluate() has no knowledge of regime — its breakout/
+        # vol checks are independent triggers that happen to often coincide
+        # with TREND/HIGH_VOL regime reads, but not always (e.g. a slow
+        # grind away from the moving average trips TREND without crossing
+        # the breakout-distance or vol-spike thresholds). Design section 8.1
+        # requires TREND to cancel orders, flatten any inventory, and enter
+        # cooldown — not just stop quoting. HIGH_VOL is already covered:
+        # its regime threshold matches _check_volatility's vol_pause_percentile,
+        # which independently returns PAUSE_GRID (existing orders remain
+        # resting, per section 6.4 — GridEngine's empty desired-set behavior
+        # for non-RANGE regimes never even runs in that case).
+        if decision.action == RiskAction.CONTINUE and state.regime == Regime.TREND:
+            decision = RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="regime TREND: price diverged from moving average / recent breakout cooldown active",
+                details={"type": "regime_trend"},
+            )
+
+        # Portfolio-level delta cap (section 9.2). This is the case
+        # individual per-asset caps can't catch: both BTC and ETH pass their
+        # own soft-cap checks individually but their correlated same-side
+        # exposure exceeds the stricter combined budget. Only overrides
+        # CONTINUE — if this asset's own checks already flagged something
+        # more specific (skew, pause, flatten), that takes precedence.
+        if decision.action == RiskAction.CONTINUE and self._portfolio_delta_breached(state.account_equity):
+            decision = RiskDecision(
+                action=RiskAction.REDUCE_ONLY,
+                reason="portfolio delta cap breached across correlated assets",
+                details={"type": "portfolio_delta"},
+            )
+        details = decision.details or {}
+        state.force_reduce_only = (
+            decision.action == RiskAction.REDUCE_ONLY
+            and details.get("type") == "portfolio_delta"
+        )
+
         # 4. Dispatch risk action. Actions that skip all further grid/persist
         # work (KILL, CANCEL_AND_FLATTEN, PAUSE_GRID, SUPPRESS_NEW_ENTRIES)
         # return from inside the handler. SKEW_*/REDUCE_ONLY fall through so
@@ -455,6 +531,17 @@ class Supervisor:
             self._risk_manager.record_desync(gap_ms)
         else:
             self._risk_manager.clear_desync()
+
+    def _portfolio_delta_breached(self, account_equity: float) -> bool:
+        """Check the combined delta across all tracked assets (section 9.2)."""
+        positions = {
+            sym: s.position
+            for sym, s in self._asset_states.items()
+            if s.position is not None
+        }
+        if not positions:
+            return False
+        return self._risk_manager.check_portfolio_delta(positions, account_equity)
 
     # ------------------------------------------------------------------
     # Graceful shutdown (section 4.5)
@@ -643,6 +730,16 @@ class Supervisor:
                 "REST/WS order divergence for %s: local=%d rest=%d — adopting exchange",
                 symbol, len(local_cloids), len(rest_cloids),
             )
+            # Design section 10.3: "Reconcile discrepancy detected" is a
+            # High-severity alert, not just a log line — the operator needs
+            # to know WS silently dropped an event even though REST self-healed
+            # it. This module maps design's High tier to WARNING, matching
+            # the existing convention used for breakout-flatten alerts below.
+            await self._send_alert(
+                "WARNING",
+                f"REST/WS order divergence for {symbol}: local={len(local_cloids)} "
+                f"rest={len(rest_cloids)} — adopted exchange state",
+            )
             state.open_orders = rest_orders
 
         # Position reconciliation
@@ -652,6 +749,11 @@ class Supervisor:
             logger.warning(
                 "REST/WS position divergence for %s: local=%.8f rest=%.8f — adopting exchange",
                 symbol, local_size, rest_size,
+            )
+            await self._send_alert(
+                "WARNING",
+                f"REST/WS position divergence for {symbol}: local={local_size:.8f} "
+                f"rest={rest_size:.8f} — adopted exchange state",
             )
         state.position = rest_position
 

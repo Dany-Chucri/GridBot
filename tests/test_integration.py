@@ -92,6 +92,7 @@ def _make_market_data(exchange: FakeExchange) -> MagicMock:
 
     md.fetch_open_orders = AsyncMock(side_effect=_fetch_orders)
     md.fetch_position = AsyncMock(side_effect=_fetch_position)
+    md.fetch_fills = AsyncMock(return_value=[])
     md.fetch_account_equity = AsyncMock(side_effect=_fetch_equity)
     md.fetch_exchange_pnl = AsyncMock(side_effect=_fetch_pnl)
     md.fetch_book_depth = AsyncMock(side_effect=_fetch_depth)
@@ -602,7 +603,14 @@ class TestPnLCrosscheck:
 
         await sup._run_cycle("BTC-PERP", sup._config.assets[0])
 
-        assert not any("divergence" in msg.lower() for _sev, msg in alerts)
+        # Note: this may still legitimately alert on REST/WS *order-count*
+        # divergence — the fake exchange harness doesn't simulate WS
+        # orderUpdates echoing back newly-placed orders, so local state
+        # hasn't caught up to the orders _reconcile() just placed by the
+        # time the same cycle's REST reconciliation step runs. That's a
+        # harness artifact, not a PnL crosscheck concern (section 10.6),
+        # which is what this test actually verifies.
+        assert not any("pnl divergence" in msg.lower() for _sev, msg in alerts)
 
         sup._fill_task.cancel()
         await sup._shutdown()
