@@ -1095,6 +1095,9 @@ max_weekly_drawdown_pct: 0.07   # 7%
 reconcile_interval_seconds: 5
 max_consecutive_errors: 10
 max_time_desynced_seconds: 30
+ws_reconnect_stale_seconds: 10  # WS health-monitor reconnect trigger; must stay
+                                 # below max_time_desynced_seconds so reconnection
+                                 # has a window to clear desync before the kill switch fires
 stagger_initial_levels: 5       # nearest 5 per side placed immediately
 
 # === Order Execution ===

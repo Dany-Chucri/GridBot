@@ -136,6 +136,7 @@ class OperationalConfig:
     reconcile_interval_seconds: float = 5.0
     max_consecutive_errors: int = 10
     max_time_desynced_seconds: float = 30.0
+    ws_reconnect_stale_seconds: float = 10.0
     stagger_initial_levels: int = 5
 
 

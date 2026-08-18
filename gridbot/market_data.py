@@ -53,7 +53,7 @@ _SECONDS_PER_YEAR = 365 * 24 * 3600
 # Reconnection parameters
 _RECONNECT_BASE_DELAY_S = 1.0
 _RECONNECT_MAX_DELAY_S = 60.0
-_WS_HEALTH_CHECK_INTERVAL_S = 5.0
+_WS_HEALTH_CHECK_INTERVAL_S = 2.0
 
 # Staleness threshold before falling back to allMids (ms)
 _L2_STALENESS_MS = 10_000
@@ -350,7 +350,11 @@ class MarketData:
                     break
 
                 now_ms = int(time.time() * 1000)
-                stale_ms = self._config.operational.max_time_desynced_seconds * 1000
+                # Deliberately below max_time_desynced_seconds (the kill-switch
+                # threshold) so reconnection has a real window to clear the
+                # desync before RiskManager's desync check (evaluated every
+                # supervisor cycle, ~1s) trips KILL.
+                stale_ms = self._config.operational.ws_reconnect_stale_seconds * 1000
 
                 if self._last_ws_message_ms > 0 and now_ms - self._last_ws_message_ms > stale_ms:
                     logger.warning(

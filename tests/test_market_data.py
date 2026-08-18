@@ -1226,3 +1226,46 @@ class TestConfigChanges:
     def test_wallet_address_default_empty(self):
         cfg = BotConfig()
         assert cfg.wallet_address == ""
+
+    def test_ws_reconnect_threshold_below_kill_threshold(self):
+        """Regression guard: the WS reconnect monitor's stale trigger must stay
+        below the desync kill switch's threshold, or reconnection never gets a
+        window to recover before RiskManager trips KILL (2026-08-18 incident —
+        both thresholds were the same value, so the more-frequently-checked
+        kill switch always won the race)."""
+        cfg = BotConfig()
+        assert (
+            cfg.operational.ws_reconnect_stale_seconds
+            < cfg.operational.max_time_desynced_seconds
+        )
+
+
+# ===========================================================================
+# 18. WS health monitor
+# ===========================================================================
+
+class TestWsHealthMonitor:
+    @pytest.mark.asyncio
+    async def test_reconnect_triggers_at_reconnect_threshold_not_kill_threshold(
+        self, md: MarketData
+    ):
+        """The health monitor must use ws_reconnect_stale_seconds (kept below
+        max_time_desynced_seconds) as its trigger, not the kill threshold
+        itself — otherwise reconnection never fires before the kill switch."""
+        import time as time_mod
+
+        md._config.operational.ws_reconnect_stale_seconds = 10.0
+        md._config.operational.max_time_desynced_seconds = 30.0
+        # 15s stale: past the reconnect threshold, well under the kill threshold.
+        md._last_ws_message_ms = int(time_mod.time() * 1000) - 15_000
+
+        def fake_reconnect():
+            md._shutting_down = True
+
+        with patch("gridbot.market_data.asyncio.sleep", new=AsyncMock()), \
+                patch.object(
+                    md, "_reconnect", new=AsyncMock(side_effect=fake_reconnect)
+                ) as mock_reconnect:
+            await asyncio.wait_for(md._monitor_ws_health(), timeout=2.0)
+
+        mock_reconnect.assert_called_once()

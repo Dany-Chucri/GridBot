@@ -9,6 +9,12 @@
 ## config/
 - `gridbot.example.yaml` — Example configuration (copy to gridbot.yaml)
 
+## deploy/
+- `gridbot.env.example` — Env var template (agent wallet private key, secrets)
+- `gridbot.logrotate` — logrotate policy for `/var/log/gridbot/*.log` (daily, 14-day retention, copytruncate)
+- `gridbot.service` — systemd unit for VPS deployment
+- `gridbot.testnet.yaml` — Testnet deployment config
+
 ## docs/
 - `architecture.md` — Module dependency graph and data flow guide
 - `design.md` — Authoritative design document (architecture, risk model, parameters)
@@ -32,10 +38,13 @@
 - `supervisor.py` — Main event loop, module orchestration, shutdown
 - `types.py` — Shared enums, dataclasses, type definitions
 
+## scripts/
+- `post_soak_analysis.py` — Post-soak SQLite report generator (see docs/testnet-soak.md)
+
 ## tests/
 - `test_config.py` — Configuration defaults and loading
 - `test_grid_engine.py` — Full GridEngine test suite (80 tests, 97% coverage)
-- `test_market_data.py` — Full MarketData test suite (97 tests, 72% coverage)
+- `test_market_data.py` — Full MarketData test suite (99 tests, 72% coverage)
 - `test_order_manager.py` — Full OrderManager test suite (117 tests)
 - `test_pnl_monitor.py` — Full PnLMonitor test suite (28 tests, 100% coverage)
 - `test_risk_manager.py` — Full RiskManager test suite (64 tests, 96% coverage)

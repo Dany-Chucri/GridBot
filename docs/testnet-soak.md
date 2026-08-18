@@ -44,7 +44,14 @@ sudo cp deploy/gridbot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now gridbot
 sudo systemctl status gridbot
+
+# 5. Install log rotation (the service appends directly to
+#    /var/log/gridbot/*.log with no rotation of its own — a multi-day soak
+#    at --log-level INFO will otherwise grow unbounded)
+sudo cp deploy/gridbot.logrotate /etc/logrotate.d/gridbot
 ```
+
+`--log-level INFO` (the service default) logs startup/shutdown, regime transitions, order batches, fills, risk events, and reconcile discrepancies — the design doc 10.2 minimum set. The per-cycle heartbeat line (`cycle symbol=... regime=... mid=...`) is DEBUG-only; pass `--log-level DEBUG` (edit `ExecStart` in the service file) only for short diagnostic runs, not for the multi-day soak — at ~1 line/s/asset it dominates log volume and isn't needed to judge pass/fail.
 
 ## Live monitoring checklist
 
@@ -60,9 +67,8 @@ Expected log events (design doc 10.2 / 10.3):
 
 - [ ] `Initialization complete` within 30s of start.
 - [ ] `Pre-flight checks passed` with a positive equity.
-- [ ] Periodic `cycle symbol=BTC-PERP regime=... mid=...` entries at ~1/s cadence.
 - [ ] `save_bot_state` succeeds (implicit — no exceptions from StateStore).
-- [ ] Regime transitions logged when conditions change (RANGE ↔ TREND / HIGH_VOL).
+- [ ] `regime transition symbol=... UNKNOWN -> ...` logged once vol history clears the 48h bootstrap minimum (section 6.4's bootstrap gate), and again on any later RANGE ↔ TREND / HIGH_VOL change. Regime stays `UNKNOWN` (no grid placed) until then — expected, not a bug.
 - [ ] Fills routed through the fill pump (look for PnLMonitor updates).
 - [ ] REST reconciliation runs on its own cadence (5s default).
 
@@ -85,6 +91,15 @@ Run these to validate each recovery path within the soak window:
 1. **Hard kill the process** (`sudo systemctl kill -s SIGKILL gridbot`). systemd will restart. Confirm state recovery and orphan cleanup in the logs.
 2. **Revoke network briefly** (`sudo iptables -A OUTPUT -d <hyperliquid-host> -j DROP`; revert after 30s). Confirm the bot enters `MAINTENANCE` and exits cleanly on reconnect.
 3. **Restart during a position hold**. Open a position (let the grid fill), hard-restart, confirm position is adopted from exchange and grid rebuilds around it.
+
+## Recovering from a DEAD state
+
+A `KILL` switch trip is sticky by design (design doc §6.6: "the bot enters a dead state that requires human intervention to restart"). `Supervisor._recover_state` explicitly preserves `bot_state=DEAD` across process restarts, and pre-flight refuses to promote a `DEAD` asset back to `RUNNING` — so a plain restart (or `systemctl restart`) after a kill will reconnect, recover state, immediately see `DEAD`, and exit again. This is correct: it forces an operator to actually look at why it died before trading resumes. There is deliberately no automated reset path.
+
+Once you've reviewed the cause and decided it's safe to resume:
+
+- **Dev/smoke-testing iteration** (no position, no fill history worth keeping): stop the bot and delete the local state DB — `rm data/gridbot.db*` — for a fully clean slate on the next run.
+- **Preserving history on a real soak**: clear just the stuck symbols' `bot_state` back to `STARTING` via SQL, e.g. `sqlite3 /opt/gridbot/data/gridbot.db "UPDATE bot_state SET state_json = json_set(state_json, '$.bot_state', 'STARTING') WHERE symbol = 'BTC-PERP';"` (repeat per symbol). Do this only after confirming via the exchange UI that there's no unexpected residual position, and only ever manually — never scripted into the restart path.
 
 ## Post-soak handoff
 

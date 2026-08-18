@@ -99,6 +99,9 @@ class Supervisor:
         self._last_crosscheck_ms: dict[str, int] = {
             ac.symbol: 0 for ac in config.assets
         }
+        self._last_regime: dict[str, Regime] = {
+            ac.symbol: Regime.UNKNOWN for ac in config.assets
+        }
 
         # Pluggable alert transport
         self._alert_callback: AlertCallback | None = alert_callback
@@ -390,6 +393,19 @@ class Supervisor:
             now_ms,
             asset_config,
         )
+        if state.regime != self._last_regime[symbol]:
+            logger.info(
+                "regime transition symbol=%s %s -> %s",
+                symbol,
+                self._last_regime[symbol].name,
+                state.regime.name,
+            )
+            await self._send_alert(
+                "INFO",
+                f"{symbol} regime transition: "
+                f"{self._last_regime[symbol].name} -> {state.regime.name}",
+            )
+            self._last_regime[symbol] = state.regime
         decision = self._risk_manager.evaluate(state)
 
         # RiskManager.evaluate() has no knowledge of regime — its breakout/
@@ -506,8 +522,12 @@ class Supervisor:
             await self._rest_reconciliation(symbol)
             self._last_rest_reconcile_ms[symbol] = now_ms
 
-        # 10. Cycle metrics
-        logger.info(
+        # 10. Cycle metrics (DEBUG: this fires every cycle_interval_seconds per
+        # symbol — design doc 10.2's minimum-log list is discrete events
+        # (regime transitions, order batches, fills, risk events, reconcile
+        # discrepancies), which already log at INFO/WARNING elsewhere; this is
+        # a heartbeat for troubleshooting, not one of those events)
+        logger.debug(
             "cycle symbol=%s regime=%s mid=%.4f equity=%.2f orders=%d pos=%.6f",
             symbol,
             state.regime.name,

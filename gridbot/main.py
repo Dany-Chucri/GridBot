@@ -16,11 +16,18 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Configure structured JSON-ish logging (UTC, millisecond precision)."""
+    """Configure structured JSON-ish logging (UTC, millisecond precision).
+
+    Explicitly targets stdout: logging.basicConfig defaults to stderr, which
+    breaks gridbot.service's StandardOutput/StandardError log split (every
+    line, including routine INFO, would land in the .err file) and triggers
+    PowerShell 5.1's NativeCommandError stderr-wrapping quirk under `2>&1`.
+    """
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format="%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
     )
     logging.Formatter.converter = lambda *_: __import__("time").gmtime()
 
