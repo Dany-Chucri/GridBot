@@ -12,8 +12,9 @@ Before provisioning the VPS:
 
 - [ ] Full test suite green locally: `pytest`.
 - [ ] `docs/design.md` reviewed; no outstanding implementation divergences flagged in `REPO_MAP.md` / `progress.md`.
-- [ ] Hyperliquid testnet wallet funded with USDC (> 2x the configured capital allocation for headroom).
-- [ ] Wallet private key exported to a **secure** password manager entry. Never committed, never emailed.
+- [ ] Master Hyperliquid testnet wallet funded with USDC via the faucet (> 2x the configured capital allocation for headroom).
+- [ ] An API/agent wallet registered under the master account (app.hyperliquid-testnet.xyz/API or mainnet equivalent) — the bot trades via this delegated key, which can sign orders but never withdraw funds. Its private key exported to a **secure** password manager entry, never committed, never emailed.
+- [ ] `gridbot.yaml`'s `wallet_address` set to the **master** account's address (not the agent wallet's address) — see `deploy/gridbot.env.example` for how the two relate.
 
 ## VPS provisioning
 

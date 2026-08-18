@@ -249,19 +249,25 @@ class RiskManager:
                 )
 
         # Vol spike: realized vol > vol_kill_percentile
-        vol_percentile = self._compute_vol_percentile(config.symbol, vol_metrics.realized_vol)
-        if vol_percentile is not None and vol_percentile > config.vol_kill_percentile:
-            # This duplicates _check_volatility's kill threshold and always
-            # fires first in evaluate()'s check order (breakout before vol),
-            # so _check_volatility's kill branch is never reached for this
-            # event. Arm the recovery timer here too, or the mandatory
-            # sustained-normalization wait (section 6.4) never starts.
-            self._vol_recovery_start[config.symbol] = None
-            return RiskDecision(
-                action=RiskAction.CANCEL_AND_FLATTEN,
-                reason=f"vol spike: percentile {vol_percentile:.2f} > {config.vol_kill_percentile}",
-                details={"type": "vol_spike", "percentile": vol_percentile},
+        # Same 48h bootstrap gate as _check_volatility (see its docstring) —
+        # this check duplicates that one's kill threshold and always fires
+        # first in evaluate()'s check order (breakout before vol), so it
+        # needs the identical cold-start guard or a thin-history sample trips
+        # it before _check_volatility ever gets a chance to.
+        if self._vol_history_sufficient(config.symbol):
+            vol_percentile = self._compute_vol_percentile(config.symbol, vol_metrics.realized_vol)
+            effective_kill_threshold = self._bootstrap_adjusted_threshold(
+                config.symbol, config.vol_kill_percentile
             )
+            if vol_percentile is not None and vol_percentile > effective_kill_threshold:
+                # Arm the recovery timer here too, or the mandatory
+                # sustained-normalization wait (section 6.4) never starts.
+                self._vol_recovery_start[config.symbol] = None
+                return RiskDecision(
+                    action=RiskAction.CANCEL_AND_FLATTEN,
+                    reason=f"vol spike: percentile {vol_percentile:.2f} > {effective_kill_threshold:.2f}",
+                    details={"type": "vol_spike", "percentile": vol_percentile},
+                )
 
         return None
 
@@ -275,28 +281,45 @@ class RiskManager:
 
         vol_pause_threshold -> stop placing new orders.
         vol_kill_threshold -> cancel all + flatten.
+
+        Both thresholds are defined (design doc 6.4) as percentiles of
+        trailing 7d vol, which is meaningless with under 48h of history — a
+        single cold-start sample is trivially its own 100th percentile. Gated
+        on the same bootstrap window as `detect_regime` (project decision:
+        <48h -> no decision, 48h-7d -> tightened threshold) so a fresh start
+        can't trip the kill switch on its first observation.
         """
+        if not self._vol_history_sufficient(symbol):
+            return None
+
         vol_percentile = self._compute_vol_percentile(symbol, vol_metrics.realized_vol)
         if vol_percentile is None:
             return None
 
+        effective_kill_threshold = self._bootstrap_adjusted_threshold(
+            symbol, config.vol_kill_percentile
+        )
+        effective_pause_threshold = self._bootstrap_adjusted_threshold(
+            symbol, config.vol_pause_percentile
+        )
+
         # Kill threshold (more severe, check first)
-        if vol_percentile > config.vol_kill_percentile:
+        if vol_percentile > effective_kill_threshold:
             # Mark that recovery will be needed when vol drops
             self._vol_recovery_start[symbol] = None
             return RiskDecision(
                 action=RiskAction.CANCEL_AND_FLATTEN,
-                reason=f"vol kill: percentile {vol_percentile:.2f} > {config.vol_kill_percentile}",
+                reason=f"vol kill: percentile {vol_percentile:.2f} > {effective_kill_threshold:.2f}",
                 details={"percentile": vol_percentile},
             )
 
         # Pause threshold
-        if vol_percentile > config.vol_pause_percentile:
+        if vol_percentile > effective_pause_threshold:
             # Mark that recovery will be needed when vol drops
             self._vol_recovery_start[symbol] = None
             return RiskDecision(
                 action=RiskAction.PAUSE_GRID,
-                reason=f"vol pause: percentile {vol_percentile:.2f} > {config.vol_pause_percentile}",
+                reason=f"vol pause: percentile {vol_percentile:.2f} > {effective_pause_threshold:.2f}",
                 details={"percentile": vol_percentile},
             )
 

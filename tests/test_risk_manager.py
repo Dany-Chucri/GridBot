@@ -314,6 +314,20 @@ class TestBreakoutDetection:
         assert result.action == RiskAction.CANCEL_AND_FLATTEN
         assert result.details["type"] == "vol_spike"
 
+    def test_vol_spike_check_gated_by_bootstrap_window(self):
+        """A single cold-start vol sample is trivially its own 100th
+        percentile; the vol-spike check must not fire on it (same bootstrap
+        gate as detect_regime / _check_volatility)."""
+        rm = _rm()
+        rm.record_vol("BTC-PERP", 0, 0.99)
+        cfg = _cfg(vol_kill_percentile=0.95)
+        result = rm._check_breakout(
+            mid_price=50000.0, anchor=50000.0, atr=500.0,
+            vol_metrics=_vol(realized_vol=0.99),
+            config=cfg,
+        )
+        assert result is None
+
     def test_no_breakout_when_within_bounds(self):
         rm = _rm()
         _seed_vol_history(rm)
@@ -375,6 +389,36 @@ class TestVolatilityCircuitBreakers:
         result = rm._check_volatility(
             "BTC-PERP", _vol(realized_vol=0.71), cfg,
         )
+        assert result is not None
+        assert result.action == RiskAction.CANCEL_AND_FLATTEN
+
+    def test_no_kill_on_cold_start_single_sample(self):
+        """A fresh bot's first-ever vol observation is trivially its own
+        100th percentile — must not trip the kill switch (design doc 6.4
+        defines these thresholds as percentiles of trailing 7d vol, which is
+        meaningless with <48h of history; same bootstrap window already used
+        by detect_regime)."""
+        rm = _rm()
+        rm.record_vol("BTC-PERP", 0, 0.99)
+        cfg = _cfg(vol_kill_percentile=0.95)
+        result = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.99), cfg)
+        assert result is None
+
+    def test_no_pause_with_thin_history(self):
+        rm = _rm()
+        rm.record_vol("BTC-PERP", 0, 0.99)
+        cfg = _cfg(vol_pause_percentile=0.80)
+        result = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.99), cfg)
+        assert result is None
+
+    def test_kill_fires_once_bootstrap_window_met(self):
+        """Sanity check: the bootstrap gate only suppresses the check while
+        history is thin — once 48h of history exists, kill still fires."""
+        rm = _rm()
+        _seed_vol_history(rm, n=50, vol_low=0.30, vol_high=0.70,
+                           start_ms=0)  # spans a full 7d by default
+        cfg = _cfg(vol_kill_percentile=0.95)
+        result = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.71), cfg)
         assert result is not None
         assert result.action == RiskAction.CANCEL_AND_FLATTEN
 

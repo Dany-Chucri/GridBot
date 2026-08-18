@@ -94,7 +94,12 @@ class OrderManager:
     async def initialize(self) -> None:
         """Initialize the exchange SDK client.
 
-        Reads wallet private key from GRIDBOT_PRIVATE_KEY env var.
+        Reads wallet private key from GRIDBOT_PRIVATE_KEY env var. The key may
+        belong to an API/agent wallet (Hyperliquid's delegated-signer model);
+        in that case `config.wallet_address` names the master trading account
+        and is passed as `account_address` so the SDK signs with the agent key
+        but reads/writes state on the master account, matching MarketData's
+        existing use of `config.wallet_address` for the same account.
         Validates connectivity with an account state query.
         """
         from eth_account import Account
@@ -108,11 +113,15 @@ class OrderManager:
             )
 
         wallet = Account.from_key(private_key)
-        self._wallet_address = wallet.address
+        self._wallet_address = self._config.wallet_address or wallet.address
 
         base_url = self._config.base_url
         self._info = Info(base_url, skip_ws=True)
-        self._client = Exchange(wallet=wallet, base_url=base_url)
+        self._client = Exchange(
+            wallet=wallet,
+            base_url=base_url,
+            account_address=self._config.wallet_address or None,
+        )
 
         # Validate connectivity
         loop = asyncio.get_running_loop()

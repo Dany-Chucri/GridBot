@@ -8,6 +8,7 @@
 # Copy to /etc/gridbot/gridbot.yaml on the VPS.
 
 testnet: true
+wallet_address: "0x..."          # master account address (see gridbot.env.example)
 
 assets:
   - symbol: BTC-PERP

@@ -210,3 +210,10 @@ __marimo__/
 .claude/
 CLAUDE.md
 progress.md
+
+# Config and Credentials
+/config/gridbot.yaml
+/deploy/gridbot.env
+
+# Local runtime state
+data/

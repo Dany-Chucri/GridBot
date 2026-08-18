@@ -20,8 +20,7 @@ KillSignal=SIGTERM
 TimeoutStopSec=60
 
 # Restart policy: do not auto-restart after a DEAD kill-switch trip.
-# A manual operator review is required per CLAUDE.md ("kill switch fired
-# — requires manual restart"). Restart on unexpected crashes only.
+# A manual operator review is required. Restart on unexpected crashes only.
 Restart=on-failure
 RestartSec=10s
 StartLimitBurst=3

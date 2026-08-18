@@ -4,6 +4,10 @@
 
 testnet: true  # Start on testnet — switch to false for mainnet
 
+# Master trading account address (NOT an API/agent wallet's own address — see
+# deploy/gridbot.env.example for how GRIDBOT_PRIVATE_KEY relates to this).
+wallet_address: "0x..."
+
 assets:
   - symbol: BTC-PERP
     leverage: 2.0

@@ -38,6 +38,6 @@
 - `test_market_data.py` — Full MarketData test suite (97 tests, 72% coverage)
 - `test_order_manager.py` — Full OrderManager test suite (117 tests)
 - `test_pnl_monitor.py` — Full PnLMonitor test suite (28 tests, 100% coverage)
-- `test_risk_manager.py` — Full RiskManager test suite (59 tests, 96% coverage)
+- `test_risk_manager.py` — Full RiskManager test suite (64 tests, 96% coverage)
 - `test_state_store.py` — Full StateStore test suite (52 tests, 96% coverage)
 - `test_supervisor.py` — Supervisor orchestration suite (28 tests, mocked modules)
