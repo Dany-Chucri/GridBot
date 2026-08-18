@@ -277,8 +277,14 @@ class TestFullLifecycle:
         for o in placed:
             assert o.symbol == symbol
 
-        # Clean up the fill pump task before the event loop closes
+        # Clean up the fill pump task and close the StateStore before the
+        # event loop closes, so aiosqlite's worker thread doesn't outlive it.
         sup._fill_task.cancel()
+        try:
+            await sup._fill_task
+        except asyncio.CancelledError:
+            pass
+        await sup._state_store.close()
 
 
 # ---------------------------------------------------------------------------
