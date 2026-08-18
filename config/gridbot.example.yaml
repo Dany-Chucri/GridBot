@@ -44,3 +44,14 @@ operational:
   max_time_desynced_seconds: 30
   ws_reconnect_stale_seconds: 10
   stagger_initial_levels: 5
+
+# Alert delivery (design doc section 10.3). Disabled by default. Secrets
+# (bot token, webhook URL) go in the environment, not here — see
+# deploy/gridbot.env.example.
+alerting:
+  telegram:
+    enabled: false
+    chat_id: ""       # non-secret; get via @userinfobot or getUpdates
+  discord:
+    enabled: false
+  min_severity: WARNING  # INFO | WARNING | CRITICAL — filters what's sent

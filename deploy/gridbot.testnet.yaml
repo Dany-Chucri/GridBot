@@ -37,3 +37,14 @@ operational:
   max_time_desynced_seconds: 30
   ws_reconnect_stale_seconds: 10
   stagger_initial_levels: 5
+
+# Unattended multi-day soak — enable at least one channel so a kill switch
+# or flatten failure at 3am doesn't sit silently in the log. Secrets go in
+# gridbot.env, not here (see deploy/gridbot.env.example).
+alerting:
+  telegram:
+    enabled: false     # set true and fill in chat_id + GRIDBOT_TELEGRAM_BOT_TOKEN
+    chat_id: ""
+  discord:
+    enabled: false      # set true and fill in GRIDBOT_DISCORD_WEBHOOK_URL
+  min_severity: WARNING

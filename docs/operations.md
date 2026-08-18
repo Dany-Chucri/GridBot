@@ -39,7 +39,7 @@ After the 48-72h window, run `scripts/post_soak_analysis.py` against the persist
 
 ## Alerting
 
-Alerts fire on events defined in [design.md](design.md) section 10.3. Configure the alert channel (Telegram/Discord/email) in `config/gridbot.yaml`.
+Alerts fire on events defined in [design.md](design.md) section 10.3, delivered via `gridbot/alerting.py`. Enable Telegram and/or Discord under `alerting:` in `config/gridbot.yaml` (channel toggles, chat ID, severity filter — see `config/gridbot.example.yaml`); the corresponding secret (`GRIDBOT_TELEGRAM_BOT_TOKEN` / `GRIDBOT_DISCORD_WEBHOOK_URL`) must be set in the environment (see `deploy/gridbot.env.example`) or that channel is silently skipped with a startup warning. No channel enabled means alerts only reach the log file — fine for local dev, not for an unattended soak.
 
 ## Shutdown Behavior
 

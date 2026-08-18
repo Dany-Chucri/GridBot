@@ -141,6 +141,23 @@ class OperationalConfig:
 
 
 # ---------------------------------------------------------------------------
+# Alerting configuration (design doc section 10.3)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AlertingConfig:
+    """Non-secret alert-channel settings. Secrets (bot token, webhook URL) are
+    read from the environment only — see gridbot/alerting.py and
+    deploy/gridbot.env.example.
+    """
+
+    telegram_enabled: bool = False
+    telegram_chat_id: str = ""
+    discord_enabled: bool = False
+    min_severity: str = "WARNING"
+
+
+# ---------------------------------------------------------------------------
 # Top-level bot configuration
 # ---------------------------------------------------------------------------
 
@@ -151,6 +168,7 @@ class BotConfig:
     assets: list[AssetConfig] = field(default_factory=lambda: [AssetConfig(), default_eth_config()])
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     operational: OperationalConfig = field(default_factory=OperationalConfig)
+    alerting: AlertingConfig = field(default_factory=AlertingConfig)
 
     @property
     def base_url(self) -> str:
@@ -210,6 +228,21 @@ def _apply_overrides(config: BotConfig, raw: dict) -> None:
         for k, v in raw["operational"].items():
             if hasattr(config.operational, k):
                 setattr(config.operational, k, v)
+
+    if "alerting" in raw:
+        alerting_raw = raw["alerting"]
+        if "telegram" in alerting_raw:
+            telegram_raw = alerting_raw["telegram"]
+            if "enabled" in telegram_raw:
+                config.alerting.telegram_enabled = bool(telegram_raw["enabled"])
+            if "chat_id" in telegram_raw:
+                config.alerting.telegram_chat_id = str(telegram_raw["chat_id"])
+        if "discord" in alerting_raw:
+            discord_raw = alerting_raw["discord"]
+            if "enabled" in discord_raw:
+                config.alerting.discord_enabled = bool(discord_raw["enabled"])
+        if "min_severity" in alerting_raw:
+            config.alerting.min_severity = str(alerting_raw["min_severity"])
 
     if "assets" in raw:
         for asset_raw in raw["assets"]:

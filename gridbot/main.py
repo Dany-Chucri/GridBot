@@ -9,6 +9,7 @@ import signal
 import sys
 from pathlib import Path
 
+from gridbot.alerting import build_alert_callback
 from gridbot.config import load_config
 from gridbot.supervisor import Supervisor
 
@@ -56,6 +57,15 @@ def parse_args() -> argparse.Namespace:
 async def run(args: argparse.Namespace) -> None:
     config = load_config(args.config, testnet=args.testnet)
     supervisor = Supervisor(config)
+
+    alert_callback = build_alert_callback(config.alerting)
+    if alert_callback is not None:
+        supervisor.set_alert_callback(alert_callback)
+    else:
+        logger.warning(
+            "No alert channel configured — critical events (kill switch, "
+            "flatten failure, backstop trigger) will only appear in logs"
+        )
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
