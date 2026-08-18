@@ -1084,6 +1084,32 @@ class TestRESTFetches:
         assert pnl == pytest.approx(250.75)
 
     @pytest.mark.asyncio
+    async def test_fetch_account_equity(self, md_with_info: MarketData):
+        md = md_with_info
+        md._info.user_state = MagicMock(
+            return_value={"marginSummary": {"accountValue": "1019.80"}}
+        )
+        equity = await md.fetch_account_equity()
+        assert equity == 1019.80
+
+    @pytest.mark.asyncio
+    async def test_fetch_account_equity_none_when_info_missing(self, md: MarketData):
+        """Regression (2026-08-18 false-KILL incident): an unavailable read
+        (e.g. mid-WS-reconnect, self._info torn down) must return None, not
+        0.0 — 0.0 is indistinguishable from a real zero-equity read and feeds
+        a false 100% drawdown into the kill switch."""
+        assert md._info is None
+        equity = await md.fetch_account_equity()
+        assert equity is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_account_equity_none_on_error(self, md_with_info: MarketData):
+        md = md_with_info
+        md._info.user_state = MagicMock(side_effect=Exception("API error"))
+        equity = await md.fetch_account_equity()
+        assert equity is None
+
+    @pytest.mark.asyncio
     async def test_fetch_exchange_pnl_no_position(self, md_with_info: MarketData):
         md = md_with_info
         md._info.user_state = MagicMock(return_value={"assetPositions": []})
@@ -1091,11 +1117,20 @@ class TestRESTFetches:
         assert pnl == 0.0
 
     @pytest.mark.asyncio
-    async def test_fetch_exchange_pnl_error(self, md_with_info: MarketData):
+    async def test_fetch_exchange_pnl_none_on_error(self, md_with_info: MarketData):
+        """Regression: an unavailable read must return None, not 0.0 — 0.0 is
+        indistinguishable from a real zero-PnL read and would feed a
+        fabricated 'divergence' into the PnL cross-check."""
         md = md_with_info
         md._info.user_state = MagicMock(side_effect=Exception("API error"))
         pnl = await md.fetch_exchange_pnl("BTC-PERP")
-        assert pnl == 0.0
+        assert pnl is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_exchange_pnl_none_when_info_missing(self, md: MarketData):
+        assert md._info is None
+        pnl = await md.fetch_exchange_pnl("BTC-PERP")
+        assert pnl is None
 
     @pytest.mark.asyncio
     async def test_fetch_book_depth(self, md_with_info: MarketData):

@@ -413,6 +413,47 @@ class TestCycle:
         ss.update_heartbeat.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_cycle_holds_last_equity_when_fetch_unavailable(self):
+        """Regression (2026-08-18 false-KILL incident): a None equity read
+        (e.g. mid-WS-reconnect, when MarketData._info is torn down) must not
+        overwrite state.account_equity with a fabricated $0 — that reads as
+        a 100% drawdown to RiskManager and trips a false KILL. The cycle
+        should hold the prior equity and skip recording an equity sample."""
+        md = _mock_market_data()
+        md.fetch_account_equity = AsyncMock(return_value=None)
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(market_data=md, risk_manager=rm)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.account_equity = 100_000.0
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.account_equity == 100_000.0
+        rm.record_equity.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cycle_skips_pnl_crosscheck_when_exchange_pnl_unavailable(self):
+        """Regression, same class as the equity fix above: a None PnL read
+        (mid-WS-reconnect) must not be treated as a real $0 divergence signal
+        — skip the cross-check for this cycle and retry next cycle."""
+        md = _mock_market_data()
+        md.fetch_exchange_pnl = AsyncMock(return_value=None)
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(market_data=md, pnl_monitor=pm)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        pm.crosscheck.assert_not_called()
+        assert sup._last_crosscheck_ms[asset_cfg.symbol] == 0
+
+    @pytest.mark.asyncio
     async def test_cycle_uses_reconcile_with_backstop_when_position_exists(self):
         om = _mock_order_manager()
         sup = _make_supervisor(order_manager=om)

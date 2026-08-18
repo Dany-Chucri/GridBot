@@ -279,7 +279,7 @@ class Supervisor:
         """
         logger.info("Running pre-flight checks")
         equity = await self._market_data.fetch_account_equity()
-        if equity <= 0:
+        if equity is None or equity <= 0:
             raise RuntimeError(f"Pre-flight: account_equity={equity} is non-positive")
 
         all_violations: list[tuple[str, list[str]]] = []
@@ -368,10 +368,14 @@ class Supervisor:
         # WS staleness feeds the desync kill switch in RiskManager.
         self._update_desync(now_ms)
 
-        # 1. Exchange-reported equity (source of truth)
+        # 1. Exchange-reported equity (source of truth). A None read means the
+        # fetch was unavailable (e.g. mid-WS-reconnect) — hold the prior
+        # cycle's equity rather than recording a fabricated $0 that would
+        # read as a 100% drawdown to RiskManager.
         account_equity = await self._market_data.fetch_account_equity()
-        self._risk_manager.record_equity(now_ms, account_equity)
-        state.account_equity = account_equity
+        if account_equity is not None:
+            self._risk_manager.record_equity(now_ms, account_equity)
+            state.account_equity = account_equity
 
         # 2. Market data snapshot
         vol_metrics = self._market_data.compute_vol_metrics(symbol)
@@ -506,13 +510,17 @@ class Supervisor:
         )
         if now_ms - self._last_crosscheck_ms[symbol] >= crosscheck_interval_ms:
             exchange_pnl = await self._market_data.fetch_exchange_pnl(symbol)
-            diverged = await self._pnl_monitor.crosscheck(symbol, exchange_pnl, now_ms)
-            self._last_crosscheck_ms[symbol] = now_ms
-            if diverged:
-                await self._send_alert(
-                    "WARNING",
-                    f"PnL divergence detected for {symbol}",
-                )
+            # None means the read was unavailable (e.g. mid-WS-reconnect) —
+            # skip this cycle's cross-check rather than treating a fabricated
+            # $0 as a real divergence; retry next cycle (timer not advanced).
+            if exchange_pnl is not None:
+                diverged = await self._pnl_monitor.crosscheck(symbol, exchange_pnl, now_ms)
+                self._last_crosscheck_ms[symbol] = now_ms
+                if diverged:
+                    await self._send_alert(
+                        "WARNING",
+                        f"PnL divergence detected for {symbol}",
+                    )
 
         # 9. REST reconciliation (own cadence)
         reconcile_interval_ms = int(

@@ -651,14 +651,18 @@ class MarketData:
             )
         return None
 
-    async def fetch_account_equity(self) -> float:
+    async def fetch_account_equity(self) -> float | None:
         """REST fetch of account equity (section 6.6).
 
         Uses exchange-reported marginSummary.accountValue (the source of
-        truth for drawdown checks).
+        truth for drawdown checks). Returns None (not 0.0) when the read is
+        unavailable — e.g. mid-WS-reconnect, when self._info is torn down —
+        so callers can hold the last-known equity instead of feeding a
+        fabricated $0 into the drawdown kill switch (a real read of 0.0 is
+        still returned as 0.0; only an inability to read is None).
         """
         if not self._info or not self._config.wallet_address:
-            return 0.0
+            return None
 
         loop = asyncio.get_running_loop()
         try:
@@ -668,15 +672,22 @@ class MarketData:
             )
         except Exception:
             logger.error("Failed to fetch account equity", exc_info=True)
-            return 0.0
+            return None
 
         summary = state.get("marginSummary", {})
         return float(summary.get("accountValue", "0") or 0)
 
-    async def fetch_exchange_pnl(self, symbol: str) -> float:
-        """REST fetch of exchange-reported unrealized PnL (section 10.6)."""
+    async def fetch_exchange_pnl(self, symbol: str) -> float | None:
+        """REST fetch of exchange-reported unrealized PnL (section 10.6).
+
+        Returns None (not 0.0) when the read is unavailable — e.g. mid-WS-
+        reconnect, when self._info is torn down — so callers can skip that
+        cycle's cross-check instead of treating a fabricated $0 as a real
+        divergence signal. A real read with no matching position is still a
+        genuine 0.0 (zero position, zero unrealized PnL).
+        """
         if not self._info or not self._config.wallet_address:
-            return 0.0
+            return None
 
         loop = asyncio.get_running_loop()
         try:
@@ -686,7 +697,7 @@ class MarketData:
             )
         except Exception:
             logger.error("Failed to fetch exchange PnL for %s", symbol, exc_info=True)
-            return 0.0
+            return None
 
         coin = self._to_coin(symbol).upper()
         for ap in state.get("assetPositions", []):

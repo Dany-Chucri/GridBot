@@ -44,7 +44,7 @@
 ## tests/
 - `test_config.py` — Configuration defaults and loading
 - `test_grid_engine.py` — Full GridEngine test suite (80 tests, 97% coverage)
-- `test_market_data.py` — Full MarketData test suite (99 tests, 72% coverage)
+- `test_market_data.py` — Full MarketData test suite (102 tests, 72% coverage)
 - `test_order_manager.py` — Full OrderManager test suite (117 tests)
 - `test_pnl_monitor.py` — Full PnLMonitor test suite (28 tests, 100% coverage)
 - `test_risk_manager.py` — Full RiskManager test suite (64 tests, 96% coverage)
