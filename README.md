@@ -1,6 +1,6 @@
 # GridBot
 
-Autonomous grid trading bot for Hyperliquid perpetual futures (BTC-PERP, ETH-PERP). Harvests mean-reversion profit in sideways markets using symmetric limit orders around a dynamic price anchor.
+Autonomous grid trading bot for perpetual futures (BTC-PERP, ETH-PERP). Harvests mean-reversion profit in sideways markets using symmetric limit orders around a dynamic price anchor.
 
 ## How It Works
 
@@ -30,13 +30,51 @@ See `docs/design.md` for the full design, and `docs/architecture.md` for the mod
 
 ## Setup
 
-**Requirements:** Python 3.11+, a Hyperliquid account with API credentials.
+**Requirements:** Python 3.11+, an exchange account with a registered API/agent wallet.
+
+**1. Install dependencies.** Either the package (recommended — installs the `gridbot` CLI entry point):
 
 ```bash
-pip install -e .
-cp config/gridbot.example.yaml config/gridbot.yaml
-# Edit gridbot.yaml — set your credentials, start on testnet: true
+python3.11 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"     # runtime + test/lint deps
+# or: pip install -e .      # runtime only
 ```
+
+or plain requirements files, if you don't want an editable install:
+
+```bash
+pip install -r requirements.txt          # runtime only
+pip install -r requirements-dev.txt      # + pytest/ruff/mypy
+```
+
+**2. Create the config file.**
+
+```bash
+cp config/gridbot.example.yaml config/gridbot.yaml
+```
+
+Edit `config/gridbot.yaml`:
+- `wallet_address` — your **master** account address (not the agent wallet's own address).
+- `testnet: true` — keep this until you've completed the soak procedure below.
+- `alerting` — optional; leave both channels `enabled: false` for local dev.
+
+**3. Provide the trading key as an environment variable — never in the YAML config.**
+
+```bash
+cp deploy/gridbot.env.example .env
+# Edit .env and set GRIDBOT_PRIVATE_KEY to your agent wallet's private key
+export $(grep -v '^#' .env | xargs)   # or use a tool like direnv/dotenv
+```
+
+Register the agent wallet at your exchange's API under your master 
+account first (see `deploy/gridbot.env.example` for the full
+explanation of how the agent key relates to `wallet_address`).
+If you set up Telegram/Discord alerting in step 2, also set
+`GRIDBOT_TELEGRAM_BOT_TOKEN` / `GRIDBOT_DISCORD_WEBHOOK_URL` in `.env`.
+
+This local setup (venv + `.env`) is enough for testnet dev/smoke-testing. For
+an actual unattended VPS deployment (systemd service, log rotation,
+multi-day soak), see `docs/testnet-soak.md`.
 
 ## Running
 

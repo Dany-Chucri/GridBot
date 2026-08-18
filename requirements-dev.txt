@@ -1,0 +1,9 @@
+# Dev/test dependencies. Kept in sync with [project.optional-dependencies.dev]
+# in pyproject.toml. Install alongside requirements.txt, or just use
+# `pip install -e ".[dev]"` instead of either file.
+-r requirements.txt
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-cov>=5.0
+ruff>=0.4
+mypy>=1.10

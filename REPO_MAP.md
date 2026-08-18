@@ -5,6 +5,8 @@
 - `REPO_MAP.md` — File index (this file)
 - `progress.md` — Development log
 - `pyproject.toml` — Python project config, dependencies, tool settings
+- `requirements-dev.txt` — Dev/test deps for `pip install -r`, mirrors pyproject `[dev]` extra
+- `requirements.txt` — Runtime deps for `pip install -r`, mirrors pyproject dependencies
 
 ## config/
 - `gridbot.example.yaml` — Example configuration (copy to gridbot.yaml)
@@ -27,6 +29,7 @@
 
 ## gridbot/
 - `__init__.py` — Package init, version
+- `alerting.py` — Telegram/Discord alert delivery, wired into Supervisor's alert callback
 - `config.py` — Configuration loading and parameter dataclasses
 - `grid_engine.py` — Pure calculation: grid levels, spacing, sizing, anchor logic
 - `main.py` — CLI entry point, argument parsing, signal handling
@@ -42,6 +45,7 @@
 - `post_soak_analysis.py` — Post-soak SQLite report generator (see docs/testnet-soak.md)
 
 ## tests/
+- `test_alerting.py` — Alert channel build/dispatch tests (Telegram, Discord, severity filtering)
 - `test_config.py` — Configuration defaults and loading
 - `test_grid_engine.py` — Full GridEngine test suite (80 tests, 97% coverage)
 - `test_market_data.py` — Full MarketData test suite (102 tests, 72% coverage)
