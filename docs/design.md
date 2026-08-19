@@ -589,7 +589,7 @@ worst_case_loss = (grid_range * position_at_breakout) + estimated_flatten_slippa
 
 Where `estimated_flatten_slippage` is computed dynamically from the slippage model (section 5.7), not assumed to be a small constant. This is quantifiable and bounded, unlike the unbounded loss of holding through a trend.
 
-**Pre-flight validation:** Before the bot starts, the pre-flight check (section 6.1) must verify that `worst_case_loss` under maximum inventory does not exceed `max_daily_drawdown`. If it does, reduce `max_abs_position` until the math works. This closes the loop between position sizing, slippage estimation, and drawdown limits — the bot cannot start in a configuration where a single breakout could breach its own safety limits.
+**Pre-flight validation:** Before the bot starts, the pre-flight check (section 6.1) must verify that `worst_case_loss` under maximum inventory does not exceed `max_daily_drawdown`. `max_abs_position` is derived (section 9.1), not operator-set, so the check cannot be cleared by lowering it directly — if it fails, reduce `capital_allocation`, `leverage`, or `btc_weight`/`eth_weight` (whichever share of the risk budget this asset draws) until the math works. This closes the loop between position sizing, slippage estimation, and drawdown limits — the bot cannot start in a configuration where a single breakout could breach its own safety limits.
 
 ### 6.4 Volatility Circuit Breakers
 
@@ -1072,7 +1072,10 @@ anchor_delay_minutes: 30
 
 # === Inventory ===
 soft_cap_pct: 0.50         # 50% of max_abs_position
-max_abs_position: <sized so liq buffer > 2x grid range>
+max_abs_position: <derived at pre-flight from this asset's share of the
+                    shared risk budget — total_risk_budget_pct * asset_weight
+                    * capital_allocation * leverage, converted to units via
+                    mid_price; see section 9.1. Not a config literal.>
 
 # === Breakout ===
 breakout_atr_distance: 4.5    # absolute ATR distance from anchor (must exceed expansion range)

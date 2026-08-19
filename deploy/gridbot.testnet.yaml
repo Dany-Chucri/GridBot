@@ -15,7 +15,10 @@ assets:
     leverage: 2.0
     levels_per_side: 10          # reduced from default 25
     capital_allocation: 0.60
-    max_abs_position: 0.1        # small cap — testnet liquidity thin
+    # max_abs_position is NOT set here — RiskManager.preflight_check derives
+    # it at startup from this asset's share of the shared risk budget
+    # (total_risk_budget_pct * btc_weight * capital_allocation * leverage,
+    # converted to units via mid_price). See gridbot/config.py.
     breakout_atr_distance: 4.5
     cooldown_minutes: 30
     max_daily_drawdown_pct: 0.03

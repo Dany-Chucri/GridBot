@@ -284,7 +284,8 @@ class Supervisor:
 
         all_violations: list[tuple[str, list[str]]] = []
         for asset_cfg in self._config.assets:
-            violations = self._risk_manager.preflight_check(asset_cfg, equity)
+            mid_price = self._market_data.get_mid_price(asset_cfg.symbol)
+            violations = self._risk_manager.preflight_check(asset_cfg, equity, mid_price)
             if violations:
                 all_violations.append((asset_cfg.symbol, violations))
 

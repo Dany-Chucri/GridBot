@@ -634,13 +634,28 @@ class RiskManager:
     # Pre-flight checks (section 6.1)
     # ------------------------------------------------------------------
 
-    def preflight_check(self, config: AssetConfig, account_equity: float) -> list[str]:
+    def _asset_weight(self, symbol: str) -> float:
+        """This asset's share of the shared portfolio risk budget (section 9.1)."""
+        return (
+            self._portfolio_config.eth_weight
+            if "ETH" in symbol.upper()
+            else self._portfolio_config.btc_weight
+        )
+
+    def preflight_check(
+        self, config: AssetConfig, account_equity: float, mid_price: float = 0.0,
+    ) -> list[str]:
         """Validate that the configuration is safe before starting.
 
         Checks:
         - Liquidation buffer >= grid_range * liq_buffer_mult
         - worst_case_loss under max inventory <= max_daily_drawdown
         - Flattenability constraint satisfied
+
+        Also derives `config.max_abs_position` from the asset's share of the
+        shared risk budget (section 9.1: "Each asset's inventory caps ... are
+        derived from its allocation") when `mid_price` is available — it is
+        not read as a raw config literal.
 
         Returns list of violation messages (empty = pass).
         """
@@ -666,31 +681,32 @@ class RiskManager:
                 f"grid_range*{liq_buffer_mult}={required_liq_distance:.4f}"
             )
 
-        # 2. Worst-case loss check
+        # 2. Derive max_abs_position from this asset's share of the shared
+        # risk budget (section 9.1), then check worst-case loss against it.
+        # exposure_frac = fraction of account_equity this asset may deploy at
+        # full leverage: total_risk_budget_pct * asset_weight * capital_allocation * leverage.
+        exposure_frac = (
+            self._portfolio_config.total_risk_budget_pct
+            * self._asset_weight(config.symbol)
+            * config.capital_allocation
+            * config.leverage
+        )
+        if mid_price > 0:
+            config.max_abs_position = exposure_frac * account_equity / mid_price
+
         # worst_case_loss = grid_range * max_abs_position + flatten_slippage + taker_fees
         # Must be <= max_daily_drawdown * account_equity
-        if config.max_abs_position > 0:
-            worst_case_loss_frac = (
-                grid_range_frac * config.max_abs_position  # grid range loss in USD-ish
-                + config.max_flatten_slippage_bps / 10000 * config.max_abs_position  # flatten slippage
+        # (grid_range_frac + flatten_slippage_frac + taker_fee_frac) * exposure_frac
+        # is the equity-fraction form — no price needed since exposure_frac is
+        # already normalized to account_equity.
+        loss_pct_of_equity = (
+            grid_range_frac + config.max_flatten_slippage_bps / 10000 + _TAKER_FEE_BPS / 10000
+        ) * exposure_frac
+        if loss_pct_of_equity > config.max_daily_drawdown_pct:
+            violations.append(
+                f"worst-case loss {loss_pct_of_equity:.4f} > "
+                f"max_daily_drawdown {config.max_daily_drawdown_pct:.4f}"
             )
-            # Normalize: this is a price-relative loss. Convert to equity fraction.
-            # Approximate: worst_case_loss ≈ grid_range_frac * max_position_usd + flatten_slippage + taker_fees
-            # where max_position_usd ≈ max_abs_position * price. Without price, we use
-            # the fraction-based approach: loss_pct = grid_range_frac + flatten_slippage_bps/10000 + taker_fee_bps/10000
-            # applied to the notional of max_abs_position.
-            # Since we can't get price here, use the equity-relative budget check:
-            # (grid_range_frac + flatten_slippage_frac + taker_fee_frac) * leverage * capital_allocation
-            loss_pct_of_equity = (
-                (grid_range_frac + config.max_flatten_slippage_bps / 10000 + _TAKER_FEE_BPS / 10000)
-                * config.leverage
-                * config.capital_allocation
-            )
-            if loss_pct_of_equity > config.max_daily_drawdown_pct:
-                violations.append(
-                    f"worst-case loss {loss_pct_of_equity:.4f} > "
-                    f"max_daily_drawdown {config.max_daily_drawdown_pct:.4f}"
-                )
 
         # 3. Flattenability — just check the formula is valid
         # This is a runtime check; pre-flight validates the config is plausible

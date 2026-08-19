@@ -26,10 +26,11 @@ Any small cloud instance is fine — the bot is I/O-bound, not CPU-heavy. Debian
 # 1. Create a dedicated user
 sudo adduser --system --group --home /opt/gridbot gridbot
 
-# 2. Clone and install
+# 2. Clone and install (requires Python >= 3.11 — use whatever the distro
+#    ships that satisfies that, e.g. python3.11 or python3.12)
 sudo -u gridbot git clone <REPO> /opt/gridbot
 cd /opt/gridbot
-sudo -u gridbot python3.11 -m venv .venv
+sudo -u gridbot python3.12 -m venv .venv
 sudo -u gridbot .venv/bin/pip install -e .
 
 # 3. Config + secrets

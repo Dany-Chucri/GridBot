@@ -58,7 +58,11 @@ class AssetConfig:
 
     # Inventory
     soft_cap_pct: float = 0.50
-    max_abs_position: float = 0.0  # Sized during pre-flight check
+    # Derived by RiskManager.preflight_check from this asset's share of the
+    # shared risk budget (section 9.1) — total_risk_budget_pct * asset_weight
+    # * capital_allocation * leverage, converted to units via mid_price at
+    # startup. Not a settable config value; any value here is overwritten.
+    max_abs_position: float = 0.0
 
     # Breakout
     breakout_atr_distance: float = 4.5

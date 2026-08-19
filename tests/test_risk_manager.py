@@ -793,13 +793,19 @@ class TestPreflightChecks:
         assert any("liq buffer" in v for v in violations)
 
     def test_worst_case_loss_exceeding_drawdown(self):
-        rm = _rm()
-        # Large grid + high leverage → worst case exceeds daily drawdown
+        # Full risk budget on this one asset isolates the worst-case-loss
+        # check from the liq-buffer check (leverage=3.0 alone clears that one).
         cfg = _cfg(
             leverage=3.0, levels_per_side=25, grid_step_bps_max=25.0,
-            max_abs_position=1.0, max_flatten_slippage_bps=50.0,
+            max_flatten_slippage_bps=50.0,
             capital_allocation=0.70, max_daily_drawdown_pct=0.03,
         )
+        bot_cfg = BotConfig(
+            assets=[cfg],
+            portfolio=PortfolioConfig(total_risk_budget_pct=1.0, btc_weight=1.0),
+            operational=OperationalConfig(max_consecutive_errors=10, max_time_desynced_seconds=30.0),
+        )
+        rm = _rm(bot_cfg)
         violations = rm.preflight_check(cfg, 100000.0)
         assert any("worst-case loss" in v for v in violations)
 
@@ -807,6 +813,22 @@ class TestPreflightChecks:
         rm = _rm()
         violations = rm.preflight_check(_cfg(), 0.0)
         assert any("account_equity" in v for v in violations)
+
+    def test_max_abs_position_derived_from_allocation(self):
+        # exposure_frac = total_risk_budget_pct(0.10) * btc_weight(0.60)
+        #                * capital_allocation(0.70) * leverage(2.0) = 0.084
+        # max_abs_position = exposure_frac * equity / mid_price
+        #                   = 0.084 * 100000 / 50000 = 0.168
+        rm = _rm()
+        cfg = _cfg(leverage=2.0, capital_allocation=0.70, max_daily_drawdown_pct=0.50)
+        rm.preflight_check(cfg, 100000.0, mid_price=50000.0)
+        assert cfg.max_abs_position == pytest.approx(0.168)
+
+    def test_max_abs_position_untouched_without_mid_price(self):
+        rm = _rm()
+        cfg = _cfg(max_abs_position=1.0, max_daily_drawdown_pct=0.50)
+        rm.preflight_check(cfg, 100000.0)
+        assert cfg.max_abs_position == 1.0
 
 
 # ---------------------------------------------------------------------------
