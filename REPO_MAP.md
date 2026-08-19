@@ -43,6 +43,7 @@
 
 ## scripts/
 - `post_soak_analysis.py` — Post-soak SQLite report generator (see docs/testnet-soak.md)
+- `test_alert.py` — Fires one real alert through the configured channel(s) to verify delivery end-to-end
 
 ## tests/
 - `test_alerting.py` — Alert channel build/dispatch tests (Telegram, Discord, severity filtering)

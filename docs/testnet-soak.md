@@ -16,6 +16,7 @@ Before provisioning the VPS:
 - [ ] An API/agent wallet registered under the master account (app.hyperliquid-testnet.xyz/API or mainnet equivalent) — the bot trades via this delegated key, which can sign orders but never withdraw funds. Its private key exported to a **secure** password manager entry, never committed, never emailed.
 - [ ] `gridbot.yaml`'s `wallet_address` set to the **master** account's address (not the agent wallet's address) — see `deploy/gridbot.env.example` for how the two relate.
 - [ ] At least one alert channel enabled under `alerting:` in `gridbot.yaml` (Telegram and/or Discord), with the matching secret set in `gridbot.env` — see [operations.md](operations.md#alerting). A multi-day unattended soak with no alert channel means a kill switch or flatten failure sits silently until someone tails the log.
+- [ ] Alert delivery verified end-to-end: `python scripts/test_alert.py --config /etc/gridbot/gridbot.yaml` (sends INFO/WARNING/CRITICAL test messages) and confirm the ones marked "expect delivery" actually land in the chat/channel, not just a clean exit (delivery failures log an `ERROR`, they don't raise).
 
 ## VPS provisioning
 

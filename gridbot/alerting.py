@@ -86,6 +86,10 @@ def build_alert_callback(config: AlertingConfig) -> AlertCallback | None:
 
     async def _combined(severity: str, message: str) -> None:
         if _SEVERITY_ORDER.get(severity.upper(), 0) < min_severity:
+            logger.debug(
+                "Alert suppressed by min_severity=%s: [%s] %s",
+                config.min_severity, severity, message,
+            )
             return
         for send in senders:
             try:

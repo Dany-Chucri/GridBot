@@ -41,6 +41,8 @@ After the 48-72h window, run `scripts/post_soak_analysis.py` against the persist
 
 Alerts fire on events defined in [design.md](design.md) section 10.3, delivered via `gridbot/alerting.py`. Enable Telegram and/or Discord under `alerting:` in `config/gridbot.yaml` (channel toggles, chat ID, severity filter — see `config/gridbot.example.yaml`); the corresponding secret (`GRIDBOT_TELEGRAM_BOT_TOKEN` / `GRIDBOT_DISCORD_WEBHOOK_URL`) must be set in the environment (see `deploy/gridbot.env.example`) or that channel is silently skipped with a startup warning. No channel enabled means alerts only reach the log file — fine for local dev, not for an unattended soak.
 
+**Verify delivery before a soak:** `python scripts/test_alert.py [--config path]` loads config the same way the bot does and fires one real message at each severity the bot uses (INFO, WARNING, CRITICAL), printing whether each is expected to clear `alerting.min_severity`. Confirm the messages that should arrive actually do (default `min_severity: WARNING` means INFO is expected to be suppressed). Delivery failures (bad token, wrong chat ID, revoked webhook) show as an `ERROR ... alert failed` log line, not an exception — check for that line, don't just trust a clean exit. Pass `--severity` to send just one.
+
 ## Shutdown Behavior
 
 - **Graceful (SIGTERM/SIGINT)**: cancels orders, persists state, exits. Does NOT flatten.
