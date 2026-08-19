@@ -54,6 +54,7 @@ AlertCallback = Callable[[str, str], Awaitable[None]]
 _INITIAL_WS_TIMEOUT_S = 30.0
 _WS_STALE_MS = 10_000
 _BREAKOUT_DETAIL_TYPES = frozenset({"distance", "return_5m", "vol_spike"})
+_RISK_ACTION_HEARTBEAT_MS = 10 * 60 * 1000
 
 
 class Supervisor:
@@ -102,6 +103,14 @@ class Supervisor:
         self._last_regime: dict[str, Regime] = {
             ac.symbol: Regime.UNKNOWN for ac in config.assets
         }
+
+        # Risk-action log throttling: log on entry (action changes), on a
+        # heartbeat cadence while unchanged, and once on exit (back to
+        # CONTINUE) — not on every cycle a persistent condition is evaluated.
+        self._last_risk_action: dict[str, RiskAction | None] = {
+            ac.symbol: None for ac in config.assets
+        }
+        self._risk_action_last_log_ms: dict[str, int] = {}
 
         # Pluggable alert transport
         self._alert_callback: AlertCallback | None = alert_callback
@@ -455,11 +464,14 @@ class Supervisor:
         # GridEngine can apply the skew via state on the next reconcile.
         skip_reconcile = False
         if decision.action != RiskAction.CONTINUE:
+            self._log_risk_action(symbol, decision.action, decision.reason, now_ms)
             skip_reconcile = await self._handle_risk_action(
                 symbol, decision, asset_config
             )
             if state.bot_state in (BotState.DEAD, BotState.COOLDOWN, BotState.FLATTENING):
                 return
+        else:
+            self._log_risk_action_cleared(symbol, now_ms)
 
         if state.bot_state not in (BotState.RUNNING, BotState.STARTING):
             return
@@ -630,6 +642,33 @@ class Supervisor:
     # Risk action handling
     # ------------------------------------------------------------------
 
+    def _log_risk_action(
+        self, symbol: str, action: RiskAction, reason: str, now_ms: int,
+    ) -> None:
+        """Log a risk action on entry (action changed) or on a heartbeat
+        cadence while it persists unchanged — not on every cycle it's
+        re-evaluated as still active."""
+        if action != self._last_risk_action[symbol]:
+            logger.info("Risk action %s for %s: %s", action.name, symbol, reason)
+            self._last_risk_action[symbol] = action
+            self._risk_action_last_log_ms[symbol] = now_ms
+            return
+
+        last_log = self._risk_action_last_log_ms.get(symbol, 0)
+        if now_ms - last_log >= _RISK_ACTION_HEARTBEAT_MS:
+            logger.info(
+                "Risk action %s for %s still active: %s", action.name, symbol, reason,
+            )
+            self._risk_action_last_log_ms[symbol] = now_ms
+
+    def _log_risk_action_cleared(self, symbol: str, now_ms: int) -> None:
+        """Log once when a persisted risk action clears back to CONTINUE."""
+        prior = self._last_risk_action[symbol]
+        if prior is not None:
+            logger.info("Risk action %s for %s cleared — resuming CONTINUE", prior.name, symbol)
+            self._last_risk_action[symbol] = None
+            self._risk_action_last_log_ms.pop(symbol, None)
+
     async def _handle_risk_action(
         self,
         symbol: str,
@@ -647,8 +686,6 @@ class Supervisor:
         action = decision.action
         reason = decision.reason
         state = self._asset_states[symbol]
-
-        logger.info("Risk action %s for %s: %s", action.name, symbol, reason)
 
         if action in (
             RiskAction.SKEW_INVENTORY,

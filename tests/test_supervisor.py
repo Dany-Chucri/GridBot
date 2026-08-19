@@ -575,6 +575,50 @@ class TestCycle:
 # ---------------------------------------------------------------------------
 
 
+class TestRiskActionLogThrottling:
+    """Risk actions log on entry, on a 10-minute heartbeat while unchanged,
+    and once on exit — not every cycle a persistent condition is re-evaluated
+    (regression: SUPPRESS_NEW_ENTRIES was logging every cycle_interval)."""
+
+    def test_logs_once_on_entry_not_on_repeat(self, caplog):
+        sup = _make_supervisor()
+        symbol = sup._config.assets[0].symbol
+
+        with caplog.at_level("INFO"):
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 1_000)
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 2_000)
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 3_000)
+
+        risk_lines = [r.message for r in caplog.records if "Risk action" in r.message]
+        assert len(risk_lines) == 1
+
+    def test_heartbeats_after_ten_minutes(self, caplog):
+        sup = _make_supervisor()
+        symbol = sup._config.assets[0].symbol
+
+        with caplog.at_level("INFO"):
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 0)
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 9 * 60 * 1000)
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 11 * 60 * 1000)
+
+        risk_lines = [r.message for r in caplog.records if "Risk action" in r.message]
+        assert len(risk_lines) == 2
+        assert "still active" in risk_lines[1]
+
+    def test_logs_on_clear(self, caplog):
+        sup = _make_supervisor()
+        symbol = sup._config.assets[0].symbol
+
+        with caplog.at_level("INFO"):
+            sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 0)
+            sup._log_risk_action_cleared(symbol, 1_000)
+            sup._log_risk_action_cleared(symbol, 2_000)  # already clear — no repeat
+
+        cleared_lines = [r.message for r in caplog.records if "cleared" in r.message]
+        assert len(cleared_lines) == 1
+        assert sup._last_risk_action[symbol] is None
+
+
 class TestRiskActions:
     @pytest.mark.asyncio
     async def test_kill_cancels_and_enters_dead(self):
