@@ -946,5 +946,10 @@ class Supervisor:
         msg = str(exc).lower()
         return any(
             token in msg
-            for token in ("503", "service unavailable", "connection refused", "maintenance")
+            for token in (
+                "503", "service unavailable",
+                "502", "bad gateway",
+                "504", "gateway timeout",
+                "connection refused", "maintenance",
+            )
         )

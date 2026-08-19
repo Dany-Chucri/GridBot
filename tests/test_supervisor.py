@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from hyperliquid.utils.error import ServerError
 
 from gridbot.config import AssetConfig, BotConfig, OperationalConfig, PortfolioConfig
 from gridbot.risk_manager import RiskAction, RiskDecision
@@ -959,6 +960,20 @@ class TestMaintenance:
         assert Supervisor._looks_like_maintenance(Exception("HTTP 503 Service Unavailable"))
         assert Supervisor._looks_like_maintenance(Exception("connection refused"))
         assert not Supervisor._looks_like_maintenance(ValueError("bad parse"))
+
+    def test_classifies_gateway_errors_as_maintenance(self):
+        # CloudFront/nginx-fronted 502s and 504s during an exchange-side
+        # outage are the same "wait passively, don't count toward kill
+        # switch" class as 503/connection-refused (design.md line 109's
+        # "or similar patterns") — observed live on the testnet soak where
+        # a ~50min 502 Bad Gateway outage tripped max_consecutive_errors.
+        assert Supervisor._looks_like_maintenance(
+            ServerError(502, "<html>502 Bad Gateway</html>")
+        )
+        assert Supervisor._looks_like_maintenance(Exception("Bad Gateway"))
+        assert Supervisor._looks_like_maintenance(
+            ServerError(504, "<html>504 Gateway Timeout</html>")
+        )
 
     @pytest.mark.asyncio
     async def test_cycle_exits_maintenance_when_ws_healthy(self):
