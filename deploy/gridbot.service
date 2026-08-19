@@ -1,5 +1,5 @@
 [Unit]
-Description=GridBot — Hyperliquid perpetual futures grid trading bot
+Description=GridBot - perpetual futures grid trading bot
 Documentation=https://github.com/dany-chucri/gridbot
 After=network-online.target
 Wants=network-online.target
