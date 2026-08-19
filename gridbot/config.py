@@ -249,13 +249,21 @@ def _apply_overrides(config: BotConfig, raw: dict) -> None:
             config.alerting.min_severity = str(alerting_raw["min_severity"])
 
     if "assets" in raw:
+        # The YAML `assets:` list is authoritative for which assets run —
+        # replace config.assets entirely rather than merging onto BotConfig's
+        # default two-asset list. Otherwise an asset omitted from the config
+        # (e.g. a single-asset testnet soak) silently survives with full
+        # default parameters instead of being excluded.
+        existing_by_symbol = {a.symbol: a for a in config.assets}
+        new_assets: list[AssetConfig] = []
         for asset_raw in raw["assets"]:
             symbol = asset_raw.get("symbol", "BTC-PERP")
-            # Find matching default or create new
-            target = next((a for a in config.assets if a.symbol == symbol), None)
-            if target is None:
-                target = AssetConfig(symbol=symbol)
-                config.assets.append(target)
+            # Reuse the matching default (preserves asset-specific defaults
+            # like ETH's tighter breakout distance) if one exists, else start
+            # from a bare AssetConfig for the given symbol.
+            target = existing_by_symbol.get(symbol) or AssetConfig(symbol=symbol)
             for k, v in asset_raw.items():
                 if hasattr(target, k):
                     setattr(target, k, v)
+            new_assets.append(target)
+        config.assets = new_assets
