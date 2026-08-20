@@ -458,6 +458,30 @@ class Supervisor:
             and details.get("type") == "portfolio_delta"
         )
 
+        # The desync KILL check (RiskManager._check_errors_and_desync) fires
+        # on elapsed WS-stale time alone, with no maintenance awareness —
+        # unlike the consecutive-errors KILL path, it never routes through
+        # an exchange call that _looks_like_maintenance could classify. If
+        # the WS is stale because the last reconnect hit a maintenance-
+        # pattern error (502/503/504/connection-refused), treat this like
+        # any other maintenance-caused disruption instead of killing the
+        # bot (CLAUDE.md: "don't count maintenance errors toward the kill
+        # switch" — observed live 2026-08-19T19:50, where this only didn't
+        # kill the bot because cancel_all_orders happened to also 502).
+        if (
+            decision.action == RiskAction.KILL
+            and "desynced_seconds" in details
+            and self._market_data.get_last_reconnect_error() is not None
+            and self._looks_like_maintenance(self._market_data.get_last_reconnect_error())
+        ):
+            logger.warning(
+                "Desync KILL for %s traces to a maintenance-pattern reconnect "
+                "failure — entering MAINTENANCE instead: %s",
+                symbol, self._market_data.get_last_reconnect_error(),
+            )
+            await self._handle_maintenance()
+            return
+
         # 4. Dispatch risk action. Actions that skip all further grid/persist
         # work (KILL, CANCEL_AND_FLATTEN, PAUSE_GRID, SUPPRESS_NEW_ENTRIES)
         # return from inside the handler. SKEW_*/REDUCE_ONLY fall through so

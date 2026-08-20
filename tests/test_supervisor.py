@@ -77,6 +77,7 @@ def _mock_market_data(mid: float = 50000.0) -> MagicMock:
     md.get_funding_rate = MagicMock(return_value=0.0)
     md.get_last_ws_message_ms = MagicMock(return_value=0)
     md.is_ws_connected = MagicMock(return_value=True)
+    md.get_last_reconnect_error = MagicMock(return_value=None)
     md.compute_vol_metrics = MagicMock(return_value=VolMetrics(
         realized_vol=0.5,
         atr=100.0,
@@ -974,6 +975,62 @@ class TestMaintenance:
         assert Supervisor._looks_like_maintenance(
             ServerError(504, "<html>504 Gateway Timeout</html>")
         )
+
+    @pytest.mark.asyncio
+    async def test_desync_kill_routes_to_maintenance_on_gateway_reconnect_error(self):
+        # Observed live 2026-08-19T19:50: RiskManager's desync check
+        # (risk_manager.py's _check_errors_and_desync) fires KILL purely
+        # off elapsed WS-stale time — it never goes through an exchange
+        # call _looks_like_maintenance could classify, so a 502 storm that
+        # takes WS down trips KILL before the (already-fixed) consecutive-
+        # errors path ever gets a chance to reclassify it. The bot only
+        # survived that incident because cancel_all_orders' own call
+        # happened to also 502 and got caught by the outer handler — this
+        # test locks in the direct fix instead of relying on that coincidence.
+        rm = _mock_risk_manager(
+            action=RiskAction.KILL, reason="desynced 30.5s >= 30s"
+        )
+        rm.evaluate = MagicMock(return_value=RiskDecision(
+            action=RiskAction.KILL,
+            reason="desynced 30.5s >= 30s",
+            details={"desynced_seconds": 30.5},
+        ))
+        md = _mock_market_data()
+        md.get_last_ws_message_ms = MagicMock(return_value=1)
+        md.get_last_reconnect_error = MagicMock(
+            return_value=ServerError(502, "<html>502 Bad Gateway</html>")
+        )
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, market_data=md, order_manager=om)
+        symbol = sup._config.assets[0].symbol
+
+        await sup._run_cycle(symbol, sup._config.assets[0])
+
+        assert sup._asset_states[symbol].bot_state == BotState.MAINTENANCE
+        om.cancel_all_orders.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_desync_kill_dispatches_normally_without_maintenance_error(self):
+        # Same desync-KILL decision, but no maintenance-pattern reconnect
+        # error on record (e.g. a genuine local desync bug) — must still
+        # kill the bot rather than silently swallowing every desync.
+        rm = _mock_risk_manager()
+        rm.evaluate = MagicMock(return_value=RiskDecision(
+            action=RiskAction.KILL,
+            reason="desynced 30.5s >= 30s",
+            details={"desynced_seconds": 30.5},
+        ))
+        md = _mock_market_data()
+        md.get_last_ws_message_ms = MagicMock(return_value=1)
+        md.get_last_reconnect_error = MagicMock(return_value=None)
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, market_data=md, order_manager=om)
+        symbol = sup._config.assets[0].symbol
+
+        await sup._run_cycle(symbol, sup._config.assets[0])
+
+        assert sup._asset_states[symbol].bot_state == BotState.DEAD
+        om.cancel_all_orders.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cycle_exits_maintenance_when_ws_healthy(self):

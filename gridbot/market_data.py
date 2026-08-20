@@ -120,6 +120,7 @@ class MarketData:
         # Reconnection state
         self._reconnect_attempts = 0
         self._shutting_down = False
+        self._last_reconnect_error: BaseException | None = None
 
     # ------------------------------------------------------------------
     # Coin/symbol helpers
@@ -390,7 +391,9 @@ class MarketData:
         try:
             await self._establish_connection()
             self._reconnect_attempts = 0
-        except Exception:
+            self._last_reconnect_error = None
+        except Exception as exc:
+            self._last_reconnect_error = exc
             logger.error("Reconnection failed", exc_info=True)
 
     # ------------------------------------------------------------------
@@ -738,6 +741,15 @@ class MarketData:
     def is_ws_connected(self) -> bool:
         """Whether the WS connection is currently healthy."""
         return self._ws_connected
+
+    def get_last_reconnect_error(self) -> BaseException | None:
+        """Exception from the most recent failed reconnect attempt, if any.
+
+        Cleared on the next successful reconnect. Lets callers distinguish
+        a desync caused by exchange-side outage from one caused by a local
+        bug, without re-raising or logging the error a second time.
+        """
+        return self._last_reconnect_error
 
     def compute_vol_metrics(self, symbol: str) -> VolMetrics:
         """Compute current volatility metrics from buffered data."""
