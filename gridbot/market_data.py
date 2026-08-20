@@ -44,6 +44,10 @@ _DEFAULT_ROLLING_RETURN = 0.0
 _MIN_TRADES_FOR_VOL = 30
 _MIN_CANDLES_FOR_ATR = 14
 
+# EMA period (minutes) for the regime trend-distance signal (design doc
+# section 8.2 signal 2). Matches the doc's own "e.g. EMA-50" example.
+_EMA_PERIOD = 50
+
 # Sampling interval for vol annualization (seconds)
 _VOL_SAMPLE_INTERVAL_S = 5
 
@@ -734,6 +738,12 @@ class MarketData:
         """Latest funding rate for the asset."""
         return self._funding_rates.get(symbol, 0.0)
 
+    def get_moving_average(self, symbol: str) -> float:
+        """EMA-50 of 1-minute candle closes (design doc section 8.2 signal 2:
+        trend distance from moving average). 0.0 until enough candles exist."""
+        candles = self._minute_candles.get(symbol, deque())
+        return self._compute_ema(candles, _EMA_PERIOD)
+
     def get_last_ws_message_ms(self) -> int:
         """Timestamp (ms) of the last WS message, or 0 if no messages yet."""
         return self._last_ws_message_ms
@@ -848,6 +858,21 @@ class MarketData:
             true_ranges.append(tr)
 
         return sum(true_ranges) / len(true_ranges)
+
+    @staticmethod
+    def _compute_ema(candles: deque[dict], period: int) -> float:
+        """EMA of 1-minute candle closes. Returns 0.0 until `period`
+        candles exist — callers treat 0.0 as "not yet available" (mirrors
+        how ATR's ready-check works), not a real average price."""
+        if len(candles) < period:
+            return 0.0
+
+        recent = list(candles)[-period:]
+        alpha = 2.0 / (period + 1)
+        ema = recent[0]["close"]
+        for c in recent[1:]:
+            ema = alpha * c["close"] + (1 - alpha) * ema
+        return ema
 
     @staticmethod
     def _compute_rolling_return(buf: deque[tuple[int, float]], window_ms: int) -> float:

@@ -901,9 +901,9 @@ REGIME = RANGE | TREND | HIGH_VOL | UNKNOWN
 
 The regime filter uses multiple signals for robustness — no single indicator decides:
 
-1. **Volatility level:** Below `vol_pause_threshold` → supports RANGE. Above → supports HIGH_VOL.
-2. **Trend strength:** Price within X * ATR of a moving average (e.g., EMA-50) → supports RANGE. Outside → supports TREND.
-3. **ADX-like proxy (optional):** Low ADX readings support RANGE.
+1. **Volatility level:** Below `vol_pause_threshold` → supports RANGE. Above → supports HIGH_VOL. Requires the §6.4 bootstrap window; short-circuits the whole function to `UNKNOWN` when that window is insufficient (deliberately not decomposed to let signals 2/4 run independently — a short/fresh ATR or EMA window right after a restart isn't a trustworthy substitute for a real one, it's a different and less reliable one).
+2. **Trend strength:** Price within X * ATR of a moving average (EMA-50 of 1-minute candle closes, `MarketData.get_moving_average`) → supports RANGE. Outside → supports TREND. *(Implemented 2026-08-20 — `state.moving_avg` was previously declared but never assigned anywhere, so this signal was dead code and TREND could only ever fire via signal 4.)*
+3. **ADX-like proxy (optional):** Low ADX readings support RANGE. Not implemented.
 4. **No recent breakout:** No breakout event in the last `cooldown_minutes` → supports RANGE.
 
 The regime is RANGE only if all supporting signals agree. Any dissenting signal pushes toward the more conservative regime.

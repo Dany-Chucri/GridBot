@@ -75,6 +75,7 @@ def _mock_market_data(mid: float = 50000.0) -> MagicMock:
     md.get_mid_price = MagicMock(return_value=mid)
     md.get_mark_price = MagicMock(return_value=mid)
     md.get_funding_rate = MagicMock(return_value=0.0)
+    md.get_moving_average = MagicMock(return_value=0.0)
     md.get_last_ws_message_ms = MagicMock(return_value=0)
     md.is_ws_connected = MagicMock(return_value=True)
     md.get_last_reconnect_error = MagicMock(return_value=None)

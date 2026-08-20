@@ -403,6 +403,7 @@ class Supervisor:
         state.mid_price = self._market_data.get_mid_price(symbol)
         state.mark_price = self._market_data.get_mark_price(symbol)
         state.funding_rate = self._market_data.get_funding_rate(symbol)
+        state.moving_avg = self._market_data.get_moving_average(symbol)
 
         # Feed vol history for percentile calcs (in-memory for this cycle's
         # decisions, persisted so a restart doesn't lose real accumulated

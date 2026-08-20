@@ -100,6 +100,7 @@ def _make_market_data(exchange: FakeExchange) -> MagicMock:
     md.get_mid_price = MagicMock(side_effect=lambda sym: exchange.mid)
     md.get_mark_price = MagicMock(side_effect=lambda sym: exchange.mark)
     md.get_funding_rate = MagicMock(return_value=0.0)
+    md.get_moving_average = MagicMock(return_value=0.0)
     md.get_last_ws_message_ms = MagicMock(side_effect=lambda: exchange.last_ws_ms)
     md.is_ws_connected = MagicMock(side_effect=lambda: exchange.ws_connected)
     md.compute_vol_metrics = MagicMock(

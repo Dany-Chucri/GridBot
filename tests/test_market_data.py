@@ -14,6 +14,7 @@ from gridbot.market_data import (
     _DEFAULT_REALIZED_VOL,
     _DEFAULT_ROLLING_RETURN,
     _DEFAULT_SPREAD_BPS,
+    _EMA_PERIOD,
     _L2_STALENESS_MS,
     _MAKER_FEE_RATE,
     _MIN_CANDLES_FOR_ATR,
@@ -357,6 +358,55 @@ class TestATR:
         # Last 14 candles have H-L = 4, prev close = 100
         # Candle index 6 (first of the narrow ones): TR = max(4, |102-100|, |98-100|) = 4
         assert vm.atr == pytest.approx(4.0)
+
+
+# ===========================================================================
+# 6b. Moving average (EMA — design doc section 8.2 signal 2, previously
+# unimplemented: state.moving_avg was declared but never assigned anywhere,
+# so the TREND-via-slow-grind regime signal could never fire)
+# ===========================================================================
+
+class TestMovingAverage:
+    def test_insufficient_candles_returns_zero(self, md: MarketData):
+        """Callers (RiskManager.detect_regime) treat 0.0 as "not yet
+        available" and skip the signal — mirrors ATR's ready-check."""
+        candles = [_make_candle(100, 105, 95, 100, ts=i * 60_000) for i in range(_EMA_PERIOD - 1)]
+        _populate_candles(md, "BTC-PERP", candles)
+        assert md.get_moving_average("BTC-PERP") == 0.0
+
+    def test_no_candles_returns_zero(self, md: MarketData):
+        assert md.get_moving_average("BTC-PERP") == 0.0
+
+    def test_flat_price_ema_equals_price(self, md: MarketData):
+        candles = [_make_candle(100, 100, 100, 100, ts=i * 60_000) for i in range(_EMA_PERIOD)]
+        _populate_candles(md, "BTC-PERP", candles)
+        assert md.get_moving_average("BTC-PERP") == pytest.approx(100.0)
+
+    def test_ema_damps_a_single_late_jump(self, md: MarketData):
+        """A single late jump nudges the EMA toward it but doesn't chase it
+        all the way — one alpha-weighted step, not a level shift."""
+        candles = [_make_candle(100, 100, 100, 100, ts=i * 60_000) for i in range(_EMA_PERIOD - 1)]
+        candles.append(_make_candle(200, 200, 200, 200, ts=(_EMA_PERIOD - 1) * 60_000))
+        _populate_candles(md, "BTC-PERP", candles)
+        ema = md.get_moving_average("BTC-PERP")
+        alpha = 2.0 / (_EMA_PERIOD + 1)
+        assert ema == pytest.approx(100.0 + alpha * 100.0)
+        assert 100.0 < ema < 110.0
+
+    def test_uses_last_n_candles(self, md: MarketData):
+        """With more than N candles, only the last N feed the EMA."""
+        candles = [_make_candle(500, 500, 500, 500, ts=i * 60_000) for i in range(20)]
+        candles += [_make_candle(100, 100, 100, 100, ts=(i + 20) * 60_000) for i in range(_EMA_PERIOD)]
+        _populate_candles(md, "BTC-PERP", candles)
+        assert md.get_moving_average("BTC-PERP") == pytest.approx(100.0)
+
+    def test_symbols_are_independent(self, md2: MarketData):
+        candles_a = [_make_candle(100, 100, 100, 100, ts=i * 60_000) for i in range(_EMA_PERIOD)]
+        candles_b = [_make_candle(200, 200, 200, 200, ts=i * 60_000) for i in range(_EMA_PERIOD)]
+        _populate_candles(md2, "BTC-PERP", candles_a)
+        _populate_candles(md2, "ETH-PERP", candles_b)
+        assert md2.get_moving_average("BTC-PERP") == pytest.approx(100.0)
+        assert md2.get_moving_average("ETH-PERP") == pytest.approx(200.0)
 
 
 # ===========================================================================
