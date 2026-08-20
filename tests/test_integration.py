@@ -199,6 +199,7 @@ async def _build_supervisor(
         rm.preflight_check = MagicMock(return_value=[])
         rm.record_equity = MagicMock()
         rm.record_vol = MagicMock()
+        rm.load_vol_history = MagicMock()
         rm.record_error = MagicMock()
         rm.record_desync = MagicMock()
         rm.clear_errors = MagicMock()

@@ -48,7 +48,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path("data/gridbot.db")
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
+
+# 7-day retention for vol_history, mirrors RiskManager._7D_MS. Kept local
+# rather than imported to avoid coupling this module to RiskManager.
+_7D_MS = 7 * 24 * 60 * 60 * 1000
 
 # SQL for schema v1
 _SCHEMA_V1 = """
@@ -128,6 +132,17 @@ CREATE TABLE IF NOT EXISTS heartbeat (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fills_symbol_ts ON fills(symbol, timestamp_ms);
+"""
+
+# SQL for schema v2 — vol history persistence (see memory: vol history
+# persistence decision). Raw observed samples only, no interpolation.
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS vol_history (
+    symbol TEXT NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    realized_vol REAL NOT NULL,
+    PRIMARY KEY (symbol, timestamp_ms)
+);
 """
 
 
@@ -251,14 +266,18 @@ class StateStore:
         exists = await cursor.fetchone()
 
         if not exists:
-            # Fresh database — apply v1 schema
+            # Fresh database — apply the full current schema directly
+            # (all versions' CREATE TABLE scripts, not just v1) so a new
+            # install doesn't need to immediately re-run migrations it
+            # could have started with.
             await self._conn.executescript(_SCHEMA_V1)
+            await self._conn.executescript(_SCHEMA_V2)
             await self._conn.execute(
                 "INSERT INTO schema_version (version, applied_ms) VALUES (?, ?)",
-                (1, _now_ms()),
+                (CURRENT_SCHEMA_VERSION, _now_ms()),
             )
             await self._conn.commit()
-            logger.info("Applied schema v1 (fresh database)")
+            logger.info("Applied schema v%d (fresh database)", CURRENT_SCHEMA_VERSION)
             return
 
         # Get current version
@@ -270,7 +289,7 @@ class StateStore:
 
         # Apply pending migrations sequentially
         migrations = {
-            # Future: 1: self._migrate_v1_to_v2,
+            1: self._migrate_v1_to_v2,
         }
         for version in range(current_version, CURRENT_SCHEMA_VERSION):
             migrate_fn = migrations.get(version)
@@ -282,6 +301,10 @@ class StateStore:
                 )
                 await self._conn.commit()
                 logger.info("Applied migration v%d -> v%d", version, version + 1)
+
+    async def _migrate_v1_to_v2(self) -> None:
+        """Add vol_history table (see memory: vol history persistence)."""
+        await self._conn.executescript(_SCHEMA_V2)
 
     async def close(self) -> None:
         """Close DB connection."""
@@ -568,3 +591,35 @@ class StateStore:
         if row is None:
             return None
         return row["timestamp_ms"]
+
+    # ------------------------------------------------------------------
+    # Vol history persistence (see memory: vol history persistence)
+    # ------------------------------------------------------------------
+
+    async def append_vol_sample(
+        self, symbol: str, timestamp_ms: int, realized_vol: float
+    ) -> None:
+        """Persist one vol observation and prune anything older than 7d.
+
+        Raw observed samples only — no interpolation of gaps. RiskManager
+        decides on load whether a gap makes the pre-gap samples unusable.
+        """
+        await self._conn.execute(
+            """INSERT OR REPLACE INTO vol_history (symbol, timestamp_ms, realized_vol)
+               VALUES (?, ?, ?)""",
+            (symbol, timestamp_ms, realized_vol),
+        )
+        await self._conn.execute(
+            "DELETE FROM vol_history WHERE symbol = ? AND timestamp_ms < ?",
+            (symbol, timestamp_ms - _7D_MS),
+        )
+        await self._conn.commit()
+
+    async def load_vol_history(self, symbol: str) -> list[tuple[int, float]]:
+        cursor = await self._conn.execute(
+            """SELECT timestamp_ms, realized_vol FROM vol_history
+               WHERE symbol = ? ORDER BY timestamp_ms""",
+            (symbol,),
+        )
+        rows = await cursor.fetchall()
+        return [(row["timestamp_ms"], row["realized_vol"]) for row in rows]

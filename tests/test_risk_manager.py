@@ -96,19 +96,44 @@ def _state(**overrides) -> AssetState:
     return AssetState(**defaults)
 
 
+# Max gap RiskManager treats as "continuous" (mirrors
+# RiskManager._MAX_CONTINUOUS_GAP_MS). Seeded histories must stay under
+# this between consecutive samples, or _continuous_run only sees the
+# trailing segment — same as it would for a real gap/outage.
+_SAFE_STEP_MS = 4 * 60 * 1000
+
+
+def _dense_span(span_ms: int, vol_low: float, vol_high: float | None = None,
+                 start_ms: int = 0) -> list[tuple[int, float]]:
+    """Build a vol-history list spanning span_ms with no internal gap
+    approaching the continuity threshold, so RiskManager._continuous_run
+    treats it as one run — matches real record_vol() cadence (~1/s)."""
+    n = max(2, span_ms // _SAFE_STEP_MS + 1)
+    vh = vol_high if vol_high is not None else vol_low
+    return [
+        (
+            start_ms + span_ms * i // (n - 1),
+            vol_low + (vh - vol_low) * i / (n - 1),
+        )
+        for i in range(n)
+    ]
+
+
 # Populate vol history so percentile calculations work.
 # Creates a 7-day uniform history from vol_low to vol_high.
 def _seed_vol_history(rm: RiskManager, symbol: str = "BTC-PERP",
                        n: int = 100, vol_low: float = 0.30, vol_high: float = 0.70,
                        start_ms: int = 0) -> int:
-    """Seed vol history and return the timestamp of the last entry."""
-    step_ms = 7 * 24 * 60 * 60 * 1000 // n  # spread over 7 days
-    ts = start_ms
-    for i in range(n):
-        vol = vol_low + (vol_high - vol_low) * i / (n - 1)
-        rm.record_vol(symbol, ts, vol)
-        ts += step_ms
-    return ts - step_ms  # last entry timestamp
+    """Seed vol history and return the timestamp of the last entry.
+
+    `n` is accepted for call-site compatibility but ignored — density is
+    always set by _SAFE_STEP_MS so the run stays continuous.
+    """
+    del n
+    span_ms = 7 * 24 * 60 * 60 * 1000
+    history = _dense_span(span_ms, vol_low, vol_high, start_ms)
+    rm._vol_history[symbol] = history
+    return history[-1][0]
 
 
 # ---------------------------------------------------------------------------
@@ -208,11 +233,7 @@ class TestRegimeDetection:
         # 48h history: ensure span is exactly 48h (start at 0, end at 48h_ms)
         rm_48h = _rm()
         span_48h = 48 * 60 * 60 * 1000
-        n = 50
-        for i in range(n):
-            vol = 0.30 + (0.70 - 0.30) * i / (n - 1)
-            ts = span_48h * i // (n - 1)
-            rm_48h.record_vol("BTC-PERP", ts, vol)
+        rm_48h._vol_history["BTC-PERP"] = _dense_span(span_48h, 0.30, 0.70)
 
         test_vol = 0.55  # ~62nd percentile of [0.30, 0.70]
 
@@ -240,31 +261,85 @@ class TestRegimeDetection:
         cfg = _cfg(vol_pause_percentile=0.80)
 
         # At exactly 48h
-        history_48h = []
         span_48h = 48 * 60 * 60 * 1000
-        for i in range(50):
-            history_48h.append((span_48h * i // 49, 0.50))
-        rm._vol_history["BTC-PERP"] = history_48h
+        rm._vol_history["BTC-PERP"] = _dense_span(span_48h, 0.50)
         threshold_48h = rm._bootstrap_adjusted_threshold("BTC-PERP", 0.80)
         assert abs(threshold_48h - 0.70) < 0.01  # maximal bias
 
         # At exactly 7d
-        history_7d = []
         span_7d = 7 * 24 * 60 * 60 * 1000
-        for i in range(100):
-            history_7d.append((span_7d * i // 99, 0.50))
-        rm._vol_history["BTC-PERP"] = history_7d
+        rm._vol_history["BTC-PERP"] = _dense_span(span_7d, 0.50)
         threshold_7d = rm._bootstrap_adjusted_threshold("BTC-PERP", 0.80)
         assert abs(threshold_7d - 0.80) < 0.01  # no bias
 
         # At midpoint (~3.5d from 48h mark ≈ halfway to 7d)
         span_mid = (span_48h + span_7d) // 2
-        history_mid = []
-        for i in range(75):
-            history_mid.append((span_mid * i // 74, 0.50))
-        rm._vol_history["BTC-PERP"] = history_mid
+        rm._vol_history["BTC-PERP"] = _dense_span(span_mid, 0.50)
         threshold_mid = rm._bootstrap_adjusted_threshold("BTC-PERP", 0.80)
         assert 0.74 < threshold_mid < 0.76  # ~halfway between 0.70 and 0.80
+
+
+# ---------------------------------------------------------------------------
+# TestVolHistoryContinuity — gap-aware sufficiency + persistence reload
+# (project decision: vol history persistence, 5-minute continuity gap)
+# ---------------------------------------------------------------------------
+
+class TestVolHistoryContinuity:
+    def test_small_gap_stays_continuous(self):
+        """A gap under the 5-minute threshold (e.g. an ordinary restart)
+        doesn't reset sufficiency — old and new samples count as one run."""
+        rm = _rm()
+        span_48h = 48 * 60 * 60 * 1000
+        history = _dense_span(span_48h, 0.50)
+        last_ts = history[-1][0]
+        rm._vol_history["BTC-PERP"] = history
+
+        # Simulate a restart: one more sample 4 minutes after the last one.
+        rm.record_vol("BTC-PERP", last_ts + 4 * 60 * 1000, 0.50)
+
+        assert rm._vol_history_sufficient("BTC-PERP") is True
+
+    def test_large_gap_breaks_continuity(self):
+        """A gap over the 5-minute threshold (a real outage) means only the
+        trailing run counts — pre-gap history no longer satisfies the 48h
+        minimum even though it's technically still in `_vol_history`."""
+        rm = _rm()
+        span_48h = 48 * 60 * 60 * 1000
+        history = _dense_span(span_48h, 0.50)
+        last_ts = history[-1][0]
+        rm._vol_history["BTC-PERP"] = history
+
+        # Simulate a 3-day outage: next sample arrives 3 days later.
+        rm.record_vol("BTC-PERP", last_ts + 3 * 24 * 60 * 60 * 1000, 0.50)
+
+        assert rm._vol_history_sufficient("BTC-PERP") is False
+
+    def test_load_vol_history_seeds_continuous_run(self):
+        """Persisted samples reloaded on restart recovery satisfy
+        sufficiency immediately, without waiting through bootstrap again."""
+        rm = _rm()
+        span_48h = 48 * 60 * 60 * 1000
+        samples = _dense_span(span_48h, 0.50, start_ms=0)
+        now_ms = samples[-1][0] + 1_000  # restart shortly after the last sample
+
+        rm.load_vol_history("BTC-PERP", samples, now_ms)
+
+        assert rm._vol_history_sufficient("BTC-PERP") is True
+
+    def test_load_vol_history_trims_to_7d_relative_to_now(self):
+        """A long-dormant DB may hold samples individually close together
+        but collectively stale relative to actual now — trim relative to
+        now_ms, not the last-persisted timestamp."""
+        rm = _rm()
+        span_48h = 48 * 60 * 60 * 1000
+        samples = _dense_span(span_48h, 0.50, start_ms=0)
+        # "Now" is 10 days after the persisted data — well past the 7d trim.
+        now_ms = samples[-1][0] + 10 * 24 * 60 * 60 * 1000
+
+        rm.load_vol_history("BTC-PERP", samples, now_ms)
+
+        assert rm._vol_history["BTC-PERP"] == []
+        assert rm._vol_history_sufficient("BTC-PERP") is False
 
 
 # ---------------------------------------------------------------------------

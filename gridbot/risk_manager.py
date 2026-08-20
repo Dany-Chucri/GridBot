@@ -32,6 +32,12 @@ _168H_MS = 168 * 60 * 60 * 1000
 _48H_MS = 48 * 60 * 60 * 1000
 _7D_MS = 7 * 24 * 60 * 60 * 1000
 
+# Max gap between consecutive vol samples for them to count as one
+# continuous history run (project decision, see memory: vol history
+# persistence). Restarts/reconnects that resolve faster than this don't
+# cost the bootstrap window; gaps wider than this (a real outage) do.
+_MAX_CONTINUOUS_GAP_MS = 5 * 60 * 1000
+
 # Taker fee estimate for the worst-case-loss preflight formula (section 6.3:
 # worst_case_loss = grid_range*position + flatten_slippage + taker_fees).
 # Mirrors MarketData._TAKER_FEE_RATE (0.05%); kept local rather than imported
@@ -558,13 +564,45 @@ class RiskManager:
 
         return Regime.RANGE
 
+    def _continuous_run(self, symbol: str) -> list[tuple[int, float]]:
+        """Trailing run of vol samples with no internal gap exceeding
+        `_MAX_CONTINUOUS_GAP_MS`.
+
+        Samples on the far side of a large gap (a real outage, not a
+        restart/reconnect that resolved quickly) don't count toward
+        sufficiency — they may be real, but they no longer establish that
+        we've had *continuous* visibility into recent conditions. Project
+        decision, see memory: vol history persistence.
+        """
+        history = self._vol_history.get(symbol, [])
+        if not history:
+            return []
+        start = 0
+        for i in range(1, len(history)):
+            if history[i][0] - history[i - 1][0] > _MAX_CONTINUOUS_GAP_MS:
+                start = i
+        return history[start:]
+
+    def load_vol_history(
+        self, symbol: str, samples: list[tuple[int, float]], now_ms: int
+    ) -> None:
+        """Seed vol history from persisted samples on restart recovery.
+
+        Samples are trimmed to the 7d window relative to `now_ms` (not the
+        last-persisted timestamp) — a long-dormant DB can hold samples that
+        are individually within 7d of each other but stale relative to
+        actual now.
+        """
+        cutoff = now_ms - _7D_MS
+        self._vol_history[symbol] = [(ts, v) for ts, v in samples if ts >= cutoff]
+
     def _vol_history_sufficient(self, symbol: str) -> bool:
         """Check if minimum vol history window (48h) has been met."""
-        history = self._vol_history.get(symbol, [])
-        if len(history) < 2:
+        run = self._continuous_run(symbol)
+        if len(run) < 2:
             return False
-        oldest_ts = history[0][0]
-        newest_ts = history[-1][0]
+        oldest_ts = run[0][0]
+        newest_ts = run[-1][0]
         span_ms = newest_ts - oldest_ts
         return span_ms >= _48H_MS
 
@@ -575,12 +613,12 @@ class RiskManager:
         At 7d: use configured threshold as-is.
         Linear interpolation between.
         """
-        history = self._vol_history.get(symbol, [])
-        if len(history) < 2:
+        run = self._continuous_run(symbol)
+        if len(run) < 2:
             return base_threshold
 
-        oldest_ts = history[0][0]
-        newest_ts = history[-1][0]
+        oldest_ts = run[0][0]
+        newest_ts = run[-1][0]
         span_ms = newest_ts - oldest_ts
 
         if span_ms >= _7D_MS:
@@ -598,7 +636,7 @@ class RiskManager:
 
         Returns None if insufficient history.
         """
-        history = self._vol_history.get(symbol, [])
+        history = self._continuous_run(symbol)
         if not history:
             return None
 

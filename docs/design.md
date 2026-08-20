@@ -602,6 +602,8 @@ A rolling volatility metric (realized stdev of 1s/5s returns, or ATR proxy from 
 
 **Restart condition:** Vol must normalize below `vol_pause_threshold` for a sustained period (default: 10 minutes) before the grid resumes.
 
+**Bootstrap window and persistence (2026-08-20):** Both thresholds are percentiles of trailing 7d vol, which is meaningless with under 48h of history — see the vol-history bootstrap decision (48h minimum, expanding to 7d, tightened thresholds during bootstrap). This window is now persisted to `StateStore` (raw observed samples, no interpolation) and reloaded on restart, rather than living only in `RiskManager` memory — a process restart no longer discards real, already-accumulated history. Sufficiency is gap-aware: `RiskManager._continuous_run` only counts a trailing run with no internal gap exceeding 5 minutes toward the 48h/7d thresholds. An ordinary restart (observed in practice: 10–23s) stays transparent; a real outage (gap > 5 min) correctly forces a fresh bootstrap, because the cause doesn't matter — only whether there's still continuous, current visibility into recent conditions.
+
 ### 6.5 Funding Rate Awareness (Two-Tier)
 
 Perpetual funding rates can turn grid profits into a slow bleed if the bot carries inventory on the paying side.

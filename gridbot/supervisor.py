@@ -197,6 +197,16 @@ class Supervisor:
             if grid_cfg is not None:
                 state.grid_config = grid_cfg
 
+            # Restore vol history so a restart doesn't cost a fresh 48h
+            # bootstrap on top of real, already-accumulated data. Gap-aware
+            # sufficiency (_continuous_run) decides whether it's still
+            # usable — a short gap (ordinary restart) is transparent, a
+            # long one (real outage) correctly forces a fresh bootstrap.
+            vol_samples = await self._state_store.load_vol_history(symbol)
+            self._risk_manager.load_vol_history(
+                symbol, vol_samples, int(time.time() * 1000)
+            )
+
             # 2. Fetch exchange state
             exchange_orders = await self._market_data.fetch_open_orders(symbol)
             exchange_position = await self._market_data.fetch_position(symbol)
@@ -394,8 +404,11 @@ class Supervisor:
         state.mark_price = self._market_data.get_mark_price(symbol)
         state.funding_rate = self._market_data.get_funding_rate(symbol)
 
-        # Feed vol history for percentile calcs
+        # Feed vol history for percentile calcs (in-memory for this cycle's
+        # decisions, persisted so a restart doesn't lose real accumulated
+        # history — see RiskManager._continuous_run).
         self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
+        await self._state_store.append_vol_sample(symbol, now_ms, vol_metrics.realized_vol)
 
         # 3. Regime detection + risk evaluation
         state.regime = self._risk_manager.detect_regime(

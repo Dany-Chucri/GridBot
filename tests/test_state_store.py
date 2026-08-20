@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from gridbot.state_store import StateStore
+from gridbot.state_store import CURRENT_SCHEMA_VERSION, StateStore
 from gridbot.types import (
     AssetState,
     BotState,
@@ -146,6 +146,7 @@ class TestInitialize:
         expected = {
             "schema_version", "grid_config", "positions", "open_orders",
             "fills", "regime", "pending_flips", "bot_state", "heartbeat",
+            "vol_history",
         }
         assert expected.issubset(table_names)
 
@@ -160,7 +161,7 @@ class TestInitialize:
     async def test_schema_version_recorded(self, store: StateStore):
         cursor = await store._conn.execute("SELECT MAX(version) as v FROM schema_version")
         row = await cursor.fetchone()
-        assert row["v"] == 1
+        assert row["v"] == CURRENT_SCHEMA_VERSION
 
     @pytest.mark.asyncio
     async def test_creates_data_directory(self, tmp_path: Path):
@@ -186,6 +187,46 @@ class TestInitialize:
         assert loaded is not None
         assert loaded.anchor == 60000.0
         await s2.close()
+
+    @pytest.mark.asyncio
+    async def test_migrates_v1_database_to_v2(self, tmp_path: Path):
+        """An existing v1 DB (pre-dating vol_history persistence) gets the
+        vol_history table added on next initialize, without losing existing
+        data."""
+        import aiosqlite
+
+        from gridbot.state_store import _SCHEMA_V1
+
+        db_path = tmp_path / "v1.db"
+        conn = await aiosqlite.connect(str(db_path))
+        await conn.executescript(_SCHEMA_V1)
+        await conn.execute(
+            "INSERT INTO schema_version (version, applied_ms) VALUES (1, 0)"
+        )
+        await conn.execute(
+            """INSERT INTO grid_config
+               (symbol, anchor, range_atr, step_bps, epoch, config_hash, updated_ms)
+               VALUES ('BTC-PERP', 60000.0, 4.5, 20.0, 1, 'x', 0)"""
+        )
+        await conn.commit()
+        await conn.close()
+
+        s = StateStore(db_path=db_path)
+        await s.initialize()
+
+        cursor = await s._conn.execute("SELECT MAX(version) as v FROM schema_version")
+        row = await cursor.fetchone()
+        assert row["v"] == CURRENT_SCHEMA_VERSION
+
+        # Pre-existing data survived the migration.
+        loaded = await s.load_grid_config("BTC-PERP")
+        assert loaded is not None
+        assert loaded.anchor == 60000.0
+
+        # New table is usable.
+        await s.append_vol_sample("BTC-PERP", 1000, 0.25)
+        assert await s.load_vol_history("BTC-PERP") == [(1000, 0.25)]
+        await s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +619,47 @@ class TestHeartbeat:
         await store.update_heartbeat("BTC-PERP", 1000)
         await store.update_heartbeat("BTC-PERP", 2000)
         assert await store.get_last_heartbeat("BTC-PERP") == 2000
+
+
+# ---------------------------------------------------------------------------
+# Vol history persistence (see memory: vol history persistence)
+# ---------------------------------------------------------------------------
+
+class TestVolHistory:
+    @pytest.mark.asyncio
+    async def test_round_trip(self, store: StateStore):
+        await store.append_vol_sample("BTC-PERP", 1000, 0.25)
+        await store.append_vol_sample("BTC-PERP", 2000, 0.30)
+        result = await store.load_vol_history("BTC-PERP")
+        assert result == [(1000, 0.25), (2000, 0.30)]
+
+    @pytest.mark.asyncio
+    async def test_load_missing_returns_empty(self, store: StateStore):
+        assert await store.load_vol_history("ETH-PERP") == []
+
+    @pytest.mark.asyncio
+    async def test_symbols_are_independent(self, store: StateStore):
+        await store.append_vol_sample("BTC-PERP", 1000, 0.25)
+        await store.append_vol_sample("ETH-PERP", 1000, 0.99)
+        assert await store.load_vol_history("BTC-PERP") == [(1000, 0.25)]
+        assert await store.load_vol_history("ETH-PERP") == [(1000, 0.99)]
+
+    @pytest.mark.asyncio
+    async def test_prunes_samples_older_than_7d(self, store: StateStore):
+        seven_d_ms = 7 * 24 * 60 * 60 * 1000
+        await store.append_vol_sample("BTC-PERP", 0, 0.25)
+        # A later sample whose 7d cutoff is past the first one — the first
+        # should be pruned rather than accumulate forever.
+        await store.append_vol_sample("BTC-PERP", seven_d_ms + 1, 0.30)
+        result = await store.load_vol_history("BTC-PERP")
+        assert result == [(seven_d_ms + 1, 0.30)]
+
+    @pytest.mark.asyncio
+    async def test_same_timestamp_replaces(self, store: StateStore):
+        await store.append_vol_sample("BTC-PERP", 1000, 0.25)
+        await store.append_vol_sample("BTC-PERP", 1000, 0.40)
+        result = await store.load_vol_history("BTC-PERP")
+        assert result == [(1000, 0.40)]
 
 
 # ---------------------------------------------------------------------------

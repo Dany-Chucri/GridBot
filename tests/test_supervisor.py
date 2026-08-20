@@ -111,6 +111,7 @@ def _mock_risk_manager(
     rm.preflight_check = MagicMock(return_value=[])
     rm.record_equity = MagicMock()
     rm.record_vol = MagicMock()
+    rm.load_vol_history = MagicMock()
     rm.record_error = MagicMock()
     rm.record_desync = MagicMock()
     rm.clear_errors = MagicMock()
@@ -125,6 +126,8 @@ def _mock_state_store() -> MagicMock:
     ss.load_bot_state = AsyncMock(return_value=None)
     ss.load_grid_config = AsyncMock(return_value=None)
     ss.load_pending_flips = AsyncMock(return_value=[])
+    ss.load_vol_history = AsyncMock(return_value=[])
+    ss.append_vol_sample = AsyncMock()
     ss.save_grid_config = AsyncMock()
     ss.save_open_orders = AsyncMock()
     ss.save_pending_flips = AsyncMock()
@@ -264,6 +267,25 @@ class TestRecovery:
         await sup._recover_state()
         # Bot state is reset to STARTING for fresh run
         assert sup._asset_states["BTC-PERP"].bot_state == BotState.STARTING
+
+    @pytest.mark.asyncio
+    async def test_recovery_reloads_vol_history(self):
+        """A restart must not lose real, already-accumulated vol history —
+        it's loaded from the store and fed to RiskManager so a restart
+        doesn't cost a fresh 48h bootstrap on top of genuine data."""
+        samples = [(1000, 0.25), (2000, 0.30)]
+        ss = _mock_state_store()
+        ss.load_vol_history = AsyncMock(return_value=samples)
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(state_store=ss, risk_manager=rm)
+
+        await sup._recover_state()
+
+        ss.load_vol_history.assert_awaited_once_with("BTC-PERP")
+        rm.load_vol_history.assert_called_once()
+        args, kwargs = rm.load_vol_history.call_args
+        assert args[0] == "BTC-PERP"
+        assert args[1] == samples
 
     @pytest.mark.asyncio
     async def test_cancels_orphan_orders(self):
