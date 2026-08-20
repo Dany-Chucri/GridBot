@@ -453,6 +453,20 @@ class Supervisor:
                 details={"type": "regime_trend"},
             )
 
+        # UNKNOWN (insufficient continuous vol history — cold start, or a
+        # restart after a gap wide enough that _continuous_run resets) gets
+        # the same treatment as HIGH_VOL: pause new placement, leave
+        # existing orders resting. Breakout, backstop, momentum filter, and
+        # drawdown checks are independent of vol history and stay fully
+        # live regardless — only the percentile-based regime call and the
+        # vol_pause/vol_kill circuit breaker are actually blind here.
+        if decision.action == RiskAction.CONTINUE and state.regime == Regime.UNKNOWN:
+            decision = RiskDecision(
+                action=RiskAction.PAUSE_GRID,
+                reason="regime UNKNOWN: insufficient continuous vol history",
+                details={"type": "regime_unknown"},
+            )
+
         # Portfolio-level delta cap (section 9.2). This is the case
         # individual per-asset caps can't catch: both BTC and ETH pass their
         # own soft-cap checks individually but their correlated same-side

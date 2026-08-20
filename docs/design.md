@@ -892,8 +892,10 @@ REGIME = RANGE | TREND | HIGH_VOL | UNKNOWN
 |---|---|
 | **RANGE** | Full grid active (Core + Expansion as applicable) |
 | **TREND** | All orders cancelled. If inventory exists, flatten. Enter cooldown. |
-| **HIGH_VOL** | Orders cancelled (vol circuit breaker). Wait for normalization. |
-| **UNKNOWN** | Treat as HIGH_VOL (fail safe — don't trade what you don't understand). |
+| **HIGH_VOL** | No new orders placed (vol circuit breaker, `PAUSE_GRID`). Existing orders remain resting. Wait for normalization. |
+| **UNKNOWN** | Same as HIGH_VOL — `PAUSE_GRID` (fail safe — don't place new orders on what you don't understand, but don't cancel a validated grid over it either). |
+
+*Note (2026-08-20):* the table above previously described HIGH_VOL/UNKNOWN as "orders cancelled," which conflicted with §6.4's own `vol_pause_threshold` row ("existing orders remain") and with the actual `PAUSE_GRID` implementation. `UNKNOWN` had no corresponding case in `Supervisor` at all — decision stayed `CONTINUE`, `GridEngine.compute_desired_orders` returned `[]` for the non-RANGE regime, and reconciling an empty desired set against real resting orders cancelled all of them, including pending flips, on the first cycle after any restart with an open grid. Fixed: `UNKNOWN` now gets the same explicit `PAUSE_GRID` override as `TREND`→`CANCEL_AND_FLATTEN` already had. Breakout, backstop, momentum filter, and drawdown checks don't depend on vol history and were never actually affected either way — only the percentile-based signal below and the §6.4 circuit breaker are blind during `UNKNOWN`.
 
 ### 8.2 Detection Signals
 

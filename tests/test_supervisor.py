@@ -545,6 +545,50 @@ class TestCycle:
         assert state.bot_state == BotState.DEAD
 
     @pytest.mark.asyncio
+    async def test_unknown_regime_pauses_grid_without_cancelling_orders(self):
+        """UNKNOWN (insufficient continuous vol history) must not fall
+        through to a real reconcile — GridEngine.compute_desired_orders
+        returns [] for any non-RANGE regime, and diffing that against real
+        resting orders would cancel all of them, including pending flips.
+        UNKNOWN gets the same PAUSE_GRID treatment as HIGH_VOL: pause new
+        placement, leave existing orders resting."""
+        rm = _mock_risk_manager()
+        rm.detect_regime = MagicMock(return_value=Regime.UNKNOWN)
+        om = _mock_order_manager()
+        sup = _make_supervisor(risk_manager=rm, order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.position = Position(
+            symbol=asset_cfg.symbol, size=0.2,
+            avg_entry_price=50000.0, unrealized_pnl=0.0,
+        )
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        om.reconcile.assert_not_awaited()
+        om.reconcile_with_backstop.assert_not_awaited()
+        om.cancel_all_orders.assert_not_awaited()
+        assert state.bot_state == BotState.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_unknown_regime_does_not_override_more_severe_action(self):
+        """A CANCEL_AND_FLATTEN/KILL from evaluate() must not be masked by
+        the regime-UNKNOWN override — only CONTINUE is eligible."""
+        rm = _mock_risk_manager(action=RiskAction.KILL, reason="drawdown")
+        rm.detect_regime = MagicMock(return_value=Regime.UNKNOWN)
+        sup = _make_supervisor(risk_manager=rm)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.bot_state == BotState.DEAD
+
+    @pytest.mark.asyncio
     async def test_portfolio_delta_breach_forces_reduce_only(self):
         """Design section 9.2: a portfolio-level delta breach across
         correlated assets must force reduce-only behavior even when this
