@@ -503,17 +503,28 @@ class OrderManager:
                 statuses = response.get("data", {}).get("statuses", [])
                 success = sum(1 for s in statuses if "success" in str(s).lower())
                 failed = len(statuses) - success
+                for i, s in enumerate(statuses):
+                    if i >= len(cancels):
+                        break
+                    order = cancels[i]
+                    if "success" in str(s).lower():
+                        logger.info(
+                            "Cancelled oid=%d %s %s @ %.2f",
+                            order.order_id,
+                            order.symbol,
+                            order.side.value,
+                            order.price,
+                        )
+                    else:
+                        logger.warning(
+                            "Cancel failed for oid=%d: %s",
+                            order.order_id,
+                            s,
+                        )
                 if failed:
                     logger.warning(
                         "Cancel batch: %d succeeded, %d failed", success, failed
                     )
-                    for i, s in enumerate(statuses):
-                        if "success" not in str(s).lower() and i < len(cancels):
-                            logger.warning(
-                                "Cancel failed for oid=%d: %s",
-                                cancels[i].order_id,
-                                s,
-                            )
         elif status == "err":
             logger.error("Cancel batch error: %s", result.get("response", ""))
 
@@ -562,6 +573,14 @@ class OrderManager:
                         break
                     order = placements[i]
                     if self._is_order_success(s):
+                        logger.info(
+                            "Placed %s %s %.6f @ %.2f%s",
+                            order.symbol,
+                            order.side.value,
+                            order.size,
+                            order.price,
+                            " (reduce-only)" if order.reduce_only else "",
+                        )
                         continue
                     if self._is_alo_rejection(s):
                         self._track_alo_rejection(order.symbol)

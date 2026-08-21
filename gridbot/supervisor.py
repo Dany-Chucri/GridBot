@@ -118,6 +118,12 @@ class Supervisor:
         # Fill pump task
         self._fill_task: asyncio.Task | None = None
 
+        # Wall-clock timestamp of the current MAINTENANCE episode's entry
+        # (None when not in maintenance). Logged as a duration on exit so a
+        # creeping maintenance window shows up before it's long enough to
+        # blow past _MAX_CONTINUOUS_GAP_MS and reset vol-history bootstrap.
+        self._maintenance_entered_ms: int | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -383,6 +389,7 @@ class Supervisor:
                 await self._rest_reconciliation(symbol)
                 state.bot_state = BotState.RUNNING
                 await self._state_store.update_heartbeat(symbol, now_ms)
+                self._log_maintenance_duration_if_done(now_ms)
             return
 
         # WS staleness feeds the desync kill switch in RiskManager.
@@ -889,10 +896,30 @@ class Supervisor:
         kill switch and avoid risk decisions during the window.
         """
         logger.warning("Entering MAINTENANCE mode")
+        if self._maintenance_entered_ms is None:
+            self._maintenance_entered_ms = int(time.time() * 1000)
         for state in self._asset_states.values():
             if state.bot_state not in (BotState.DEAD, BotState.SHUTTING_DOWN):
                 state.bot_state = BotState.MAINTENANCE
         self._risk_manager.record_error(is_maintenance=True)
+
+    def _log_maintenance_duration_if_done(self, now_ms: int) -> None:
+        """Log total MAINTENANCE episode duration once every asset has exited.
+
+        Assets can exit MAINTENANCE on different cycles, so this only fires
+        (and clears the entry timestamp) once none remain in that state —
+        otherwise the first asset to reconcile would log a partial duration.
+        """
+        if self._maintenance_entered_ms is None:
+            return
+        if any(
+            state.bot_state == BotState.MAINTENANCE
+            for state in self._asset_states.values()
+        ):
+            return
+        duration_s = (now_ms - self._maintenance_entered_ms) / 1000.0
+        logger.warning("MAINTENANCE episode ended after %.1fs", duration_s)
+        self._maintenance_entered_ms = None
 
     # ------------------------------------------------------------------
     # Alerting (section 10.3)
@@ -940,6 +967,19 @@ class Supervisor:
         """Route a fill to PnLMonitor, OrderManager flip logic, StateStore."""
         symbol = fill.symbol
         state = self._asset_states.get(symbol)
+
+        logger.info(
+            "Fill %s: %s %s %.6f @ %.2f fee=%.6f%s%s",
+            fill.fill_id,
+            symbol,
+            fill.side.value,
+            fill.size,
+            fill.price,
+            fill.fee,
+            " maker" if fill.is_maker else " taker",
+            " partial" if fill.is_partial else "",
+        )
+
         if state is None:
             return
 
