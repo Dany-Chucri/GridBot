@@ -375,12 +375,14 @@ class Supervisor:
 
         # Respect COOLDOWN timer (keep heartbeat fresh so liveness check
         # doesn't page operators during long cooldowns). Still sample vol
-        # while waiting, a planned cooldown (default 30 min) is not a data
-        # gap, only MAINTENANCE (a real exchange-side outage) should be
-        # allowed to blow _MAX_CONTINUOUS_GAP_MS and reset bootstrap.
+        # and equity while waiting, a planned cooldown (default 30 min) is
+        # not a data gap, only MAINTENANCE (a real exchange-side outage)
+        # should be allowed to blow _MAX_CONTINUOUS_GAP_MS and reset
+        # bootstrap, or leave a hole in the drawdown window.
         if state.bot_state == BotState.COOLDOWN:
             await self._state_store.update_heartbeat(symbol, now_ms)
             if state.cooldown_until_ms is not None and now_ms < state.cooldown_until_ms:
+                await self._record_equity_sample(state, now_ms)
                 await self._record_vol_sample(symbol, now_ms)
                 return
             logger.info("Cooldown expired for %s, resuming", symbol)
@@ -400,14 +402,9 @@ class Supervisor:
         # WS staleness feeds the desync kill switch in RiskManager.
         self._update_desync(now_ms)
 
-        # 1. Exchange-reported equity (source of truth). A None read means the
-        # fetch was unavailable (e.g. mid-WS-reconnect), hold the prior
-        # cycle's equity rather than recording a fabricated $0 that would
-        # read as a 100% drawdown to RiskManager.
-        account_equity = await self._market_data.fetch_account_equity()
-        if account_equity is not None:
-            self._risk_manager.record_equity(now_ms, account_equity)
-            state.account_equity = account_equity
+        # 1. Exchange-reported equity (source of truth), see
+        # _record_equity_sample for the None-read guard.
+        await self._record_equity_sample(state, now_ms)
 
         # 2. Market data snapshot (also feeds vol history, see
         # _record_vol_sample, for percentile calcs and RiskManager._continuous_run)
@@ -620,6 +617,20 @@ class Supervisor:
             state.position.size if state.position else 0.0,
         )
         self._risk_manager.clear_errors()
+
+    async def _record_equity_sample(self, state: AssetState, now_ms: int) -> None:
+        """Sample exchange-reported equity for the drawdown rolling window.
+
+        Called every cycle the bot is up, including while parked in
+        COOLDOWN, same reasoning as _record_vol_sample: a planned cooldown
+        shouldn't leave a hole in the 24h/168h drawdown windows. A None
+        read (e.g. mid-WS-reconnect) is held rather than recorded, it would
+        otherwise read as a fabricated 100% drawdown to RiskManager.
+        """
+        account_equity = await self._market_data.fetch_account_equity()
+        if account_equity is not None:
+            self._risk_manager.record_equity(now_ms, account_equity)
+            state.account_equity = account_equity
 
     async def _record_vol_sample(self, symbol: str, now_ms: int) -> VolMetrics:
         """Sample realized vol for percentile calcs and continuity tracking.
