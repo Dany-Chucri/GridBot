@@ -374,10 +374,14 @@ class Supervisor:
         now_ms = int(time.time() * 1000)
 
         # Respect COOLDOWN timer (keep heartbeat fresh so liveness check
-        # doesn't page operators during long cooldowns).
+        # doesn't page operators during long cooldowns). Still sample vol
+        # while waiting, a planned cooldown (default 30 min) is not a data
+        # gap, only MAINTENANCE (a real exchange-side outage) should be
+        # allowed to blow _MAX_CONTINUOUS_GAP_MS and reset bootstrap.
         if state.bot_state == BotState.COOLDOWN:
             await self._state_store.update_heartbeat(symbol, now_ms)
             if state.cooldown_until_ms is not None and now_ms < state.cooldown_until_ms:
+                await self._record_vol_sample(symbol, now_ms)
                 return
             logger.info("Cooldown expired for %s, resuming", symbol)
             state.bot_state = BotState.RUNNING
@@ -405,19 +409,14 @@ class Supervisor:
             self._risk_manager.record_equity(now_ms, account_equity)
             state.account_equity = account_equity
 
-        # 2. Market data snapshot
-        vol_metrics = self._market_data.compute_vol_metrics(symbol)
+        # 2. Market data snapshot (also feeds vol history, see
+        # _record_vol_sample, for percentile calcs and RiskManager._continuous_run)
+        vol_metrics = await self._record_vol_sample(symbol, now_ms)
         state.vol_metrics = vol_metrics
         state.mid_price = self._market_data.get_mid_price(symbol)
         state.mark_price = self._market_data.get_mark_price(symbol)
         state.funding_rate = self._market_data.get_funding_rate(symbol)
         state.moving_avg = self._market_data.get_moving_average(symbol)
-
-        # Feed vol history for percentile calcs (in-memory for this cycle's
-        # decisions, persisted so a restart doesn't lose real accumulated
-        # history, see RiskManager._continuous_run).
-        self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
-        await self._state_store.append_vol_sample(symbol, now_ms, vol_metrics.realized_vol)
 
         # 3. Regime detection + risk evaluation
         state.regime = self._risk_manager.detect_regime(
@@ -621,6 +620,20 @@ class Supervisor:
             state.position.size if state.position else 0.0,
         )
         self._risk_manager.clear_errors()
+
+    async def _record_vol_sample(self, symbol: str, now_ms: int) -> VolMetrics:
+        """Sample realized vol for percentile calcs and continuity tracking.
+
+        Called every cycle the bot is up and taking market data, including
+        while parked in COOLDOWN, a planned cooldown is not a data gap.
+        Only MAINTENANCE (a real exchange-side outage, where market data
+        itself is unavailable) should be able to blow
+        RiskManager._MAX_CONTINUOUS_GAP_MS and reset the bootstrap.
+        """
+        vol_metrics = self._market_data.compute_vol_metrics(symbol)
+        self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
+        await self._state_store.append_vol_sample(symbol, now_ms, vol_metrics.realized_vol)
+        return vol_metrics
 
     def _ws_is_stale(self, now_ms: int) -> bool:
         last = self._market_data.get_last_ws_message_ms()

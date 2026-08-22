@@ -638,6 +638,62 @@ class TestCycle:
         # RiskManager.evaluate should NOT be called
         sup._risk_manager.evaluate.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_cooldown_still_samples_vol(self):
+        """A planned cooldown (default 30 min) is not a data gap, only
+        MAINTENANCE should be able to blow the 5-minute continuity
+        threshold. Vol must keep getting sampled while parked here."""
+        md = _mock_market_data()
+        rm = _mock_risk_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(market_data=md, risk_manager=rm, state_store=ss)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.COOLDOWN
+        state.cooldown_until_ms = 2**62  # far future
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        md.compute_vol_metrics.assert_called_once_with(asset_cfg.symbol)
+        rm.record_vol.assert_called_once()
+        ss.append_vol_sample.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_expiry_cycle_samples_vol_exactly_once(self):
+        """The cycle where cooldown expires falls through to the normal
+        flow, which also samples vol, must not double-record for the same
+        cycle."""
+        md = _mock_market_data()
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(market_data=md, risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.COOLDOWN
+        state.cooldown_until_ms = 0  # already expired
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        md.compute_vol_metrics.assert_called_once_with(asset_cfg.symbol)
+        rm.record_vol.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_maintenance_does_not_sample_vol(self):
+        """Unlike COOLDOWN, MAINTENANCE reflects a real exchange-side
+        outage, market data itself may be unavailable/stale, so it must
+        stay the one state allowed to blow vol-history continuity."""
+        md = _mock_market_data()
+        md.is_ws_connected = MagicMock(return_value=False)
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(market_data=md, risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.MAINTENANCE
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        md.compute_vol_metrics.assert_not_called()
+        rm.record_vol.assert_not_called()
+
 
 class TestAnchorManagement:
     """Section 5.1: anchor establishment and re-anchoring, driven each
