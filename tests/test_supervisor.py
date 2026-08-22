@@ -639,6 +639,121 @@ class TestCycle:
         sup._risk_manager.evaluate.assert_not_called()
 
 
+class TestAnchorManagement:
+    """Section 5.1: anchor establishment and re-anchoring, driven each
+    cycle by Supervisor._maintain_anchor. Without this, a fresh asset (no
+    persisted grid_config) never places an order, GridEngine.compute_
+    desired_orders requires a grid_config to compute levels against, and
+    nothing else in the codebase ever creates one."""
+
+    @pytest.mark.asyncio
+    async def test_establishes_anchor_on_first_range_entry(self):
+        sup = _make_supervisor()
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        assert state.grid_config is None
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.grid_config is not None
+        assert state.grid_config.anchor == 50000.0  # mocked mid price
+
+    @pytest.mark.asyncio
+    async def test_anchor_established_even_when_new_entries_suppressed(self):
+        """The anchor must be ready the moment SUPPRESS_NEW_ENTRIES clears,
+        not established only on a cycle that reaches full reconciliation."""
+        rm = _mock_risk_manager(
+            action=RiskAction.SUPPRESS_NEW_ENTRIES, reason="momentum",
+        )
+        sup = _make_supervisor(risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.grid_config is not None
+
+    @pytest.mark.asyncio
+    async def test_no_anchor_established_outside_range(self):
+        rm = _mock_risk_manager()
+        rm.detect_regime = MagicMock(return_value=Regime.UNKNOWN)
+        sup = _make_supervisor(risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.grid_config is None
+
+    @pytest.mark.asyncio
+    async def test_reanchors_when_all_conditions_met(self):
+        import time
+
+        rm = _mock_risk_manager()
+        rm.is_vol_stable_or_declining = MagicMock(return_value=True)
+        sup = _make_supervisor(risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        # mid_price (mocked at 50000) drifted 300 from anchor; threshold is
+        # 1.5 * atr(100) = 150, so this clears condition 1.
+        state.grid_config = GridConfig(
+            symbol=asset_cfg.symbol, anchor=49700.0,
+            range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        # Drift "started" well past anchor_delay_minutes (30 min) ago.
+        state.drift_start_ms = int(time.time() * 1000) - 40 * 60 * 1000
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.grid_config.anchor == 50000.0
+        assert state.grid_config.epoch == 1
+        assert state.anchor_epoch == 1
+        assert state.drift_start_ms is None
+
+    @pytest.mark.asyncio
+    async def test_does_not_reanchor_when_vol_unstable(self):
+        import time
+
+        rm = _mock_risk_manager()
+        rm.is_vol_stable_or_declining = MagicMock(return_value=False)
+        sup = _make_supervisor(risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        state.grid_config = GridConfig(
+            symbol=asset_cfg.symbol, anchor=49700.0,
+            range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        state.drift_start_ms = int(time.time() * 1000) - 40 * 60 * 1000
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.grid_config.anchor == 49700.0
+        assert state.grid_config.epoch == 1
+
+    @pytest.mark.asyncio
+    async def test_drift_start_reset_when_price_returns_to_anchor(self):
+        rm = _mock_risk_manager()
+        sup = _make_supervisor(risk_manager=rm)
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+        # mid_price mocked at 50000, matches anchor, no drift.
+        state.grid_config = GridConfig(
+            symbol=asset_cfg.symbol, anchor=50000.0,
+            range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        state.drift_start_ms = 12345
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        assert state.drift_start_ms is None
+
+
 # ---------------------------------------------------------------------------
 # Risk action handling
 # ---------------------------------------------------------------------------

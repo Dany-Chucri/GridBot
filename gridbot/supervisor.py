@@ -44,6 +44,7 @@ from gridbot.types import (
     PendingFlip,
     Position,
     Regime,
+    VolMetrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -531,6 +532,14 @@ class Supervisor:
             return
         state.bot_state = BotState.RUNNING
 
+        # Establish the anchor on first RANGE entry, then maintain it (re-
+        # anchor when all four conditions in section 5.1 agree). Runs even
+        # when skip_reconcile is True (e.g. SUPPRESS_NEW_ENTRIES) so the
+        # anchor is ready the moment new entries are allowed again, rather
+        # than costing an extra cycle.
+        if state.regime == Regime.RANGE and vol_metrics is not None:
+            await self._maintain_anchor(symbol, state, asset_config, vol_metrics, now_ms)
+
         # 5. Grid computation and reconciliation (unless suppressed)
         engine = self._grid_engines[symbol]
         grid_cfg = state.grid_config
@@ -796,6 +805,77 @@ class Supervisor:
             return True
 
         return False
+
+    async def _maintain_anchor(
+        self,
+        symbol: str,
+        state: AssetState,
+        asset_config: AssetConfig,
+        vol_metrics: VolMetrics,
+        now_ms: int,
+    ) -> None:
+        """Establish the grid anchor if none exists yet, otherwise track
+        drift and re-anchor when all four conditions agree (section 5.1).
+
+        Nothing else in the codebase ever creates a GridConfig; without this,
+        a fresh asset (or one whose persisted grid_config was never set)
+        stays in RANGE indefinitely without ever placing an order, since
+        GridEngine.compute_desired_orders requires a grid_config to compute
+        levels against.
+        """
+        engine = self._grid_engines[symbol]
+
+        if state.grid_config is None:
+            state.grid_config = engine.new_grid_config(
+                state.mid_price, vol_metrics, state.anchor_epoch
+            )
+            state.drift_start_ms = None
+            logger.info(
+                "Anchor established for %s at %.4f (epoch=%d)",
+                symbol, state.grid_config.anchor, state.grid_config.epoch,
+            )
+            return
+
+        atr = vol_metrics.atr
+        if atr <= 0:
+            return
+
+        drift = abs(state.mid_price - state.grid_config.anchor)
+        if drift > asset_config.anchor_shift_threshold_atr * atr:
+            if state.drift_start_ms is None:
+                state.drift_start_ms = now_ms
+        else:
+            state.drift_start_ms = None
+
+        vol_stable = self._risk_manager.is_vol_stable_or_declining(symbol, now_ms)
+        if not engine.should_reanchor(
+            state.mid_price,
+            state.grid_config.anchor,
+            atr,
+            state.regime,
+            vol_stable,
+            state.drift_start_ms,
+            now_ms,
+        ):
+            return
+
+        old_anchor = state.grid_config.anchor
+        new_anchor = engine.compute_new_anchor(state.mid_price, old_anchor)
+        state.anchor_epoch += 1
+        state.grid_config = engine.new_grid_config(
+            new_anchor, vol_metrics, state.anchor_epoch
+        )
+        state.drift_start_ms = None
+        # Restart staggered deployment against the new anchor rather than
+        # instantly placing every level at the freshly re-centered grid.
+        state.stagger_placed_count = 0
+        logger.info(
+            "Re-anchored %s: %.4f -> %.4f (epoch=%d)",
+            symbol, old_anchor, new_anchor, state.anchor_epoch,
+        )
+        await self._send_alert(
+            "INFO", f"{symbol} re-anchored: {old_anchor:.4f} -> {new_anchor:.4f}"
+        )
 
     async def _run_flatten(self, symbol: str, asset_cfg: AssetConfig) -> None:
         """Invoke OrderManager's flatten state machine (section 6.7)."""

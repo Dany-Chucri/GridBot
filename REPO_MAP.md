@@ -48,10 +48,10 @@
 ## tests/
 - `test_alerting.py`: Alert channel build/dispatch tests (Telegram, Discord, severity filtering)
 - `test_config.py`: Configuration defaults and loading
-- `test_grid_engine.py`: Full GridEngine test suite (80 tests, 97% coverage)
+- `test_grid_engine.py`: Full GridEngine test suite (86 tests, 97% coverage)
 - `test_market_data.py`: Full MarketData test suite (102 tests, 72% coverage)
 - `test_order_manager.py`: Full OrderManager test suite (117 tests)
 - `test_pnl_monitor.py`: Full PnLMonitor test suite (28 tests, 100% coverage)
-- `test_risk_manager.py`: Full RiskManager test suite (64 tests, 96% coverage)
+- `test_risk_manager.py`: Full RiskManager test suite (75 tests, 96% coverage)
 - `test_state_store.py`: Full StateStore test suite (52 tests, 96% coverage)
-- `test_supervisor.py`: Supervisor orchestration suite (28 tests, mocked modules)
+- `test_supervisor.py`: Supervisor orchestration suite (61 tests, mocked modules)

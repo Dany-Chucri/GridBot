@@ -34,6 +34,15 @@ StateStore.save()            →  persist updated state
 PnLMonitor.crosscheck()      →  validate local vs exchange PnL
 ```
 
+## Anchor Lifecycle
+
+`GridEngine` is pure and never mutates `state.grid_config` itself ([design.md](design.md) section 5.1). `Supervisor._maintain_anchor` owns the anchor's lifecycle, once per cycle, whenever `regime == RANGE`:
+
+- **No `grid_config` yet** (fresh asset, or a restart that lost it): establish one immediately via `GridEngine.new_grid_config(mid_price, ...)`. This runs even under `SUPPRESS_NEW_ENTRIES`, so the anchor is ready the instant new entries are allowed again instead of costing an extra cycle.
+- **`grid_config` exists**: track `state.drift_start_ms` against `state.grid_config.anchor`, then defer to `GridEngine.should_reanchor` (the four-condition gate) and `GridEngine.compute_new_anchor`. On a re-anchor, `state.anchor_epoch` increments and `state.stagger_placed_count` resets so the new grid deploys staggered rather than all at once.
+
+`RiskManager.is_vol_stable_or_declining` supplies condition 4 (vol not rising), comparing the trailing 15-minute window's two halves.
+
 ## Concurrency Model
 
 - Single async event loop (`asyncio`).

@@ -715,6 +715,33 @@ class TestAnchorManagement:
         assert eng.compute_new_anchor(51000.0, 50000.0) == 51000.0
 
 
+class TestNewGridConfig:
+    """new_grid_config: builds a fresh GridConfig for anchor establishment
+    or re-anchoring (used by Supervisor)."""
+
+    def test_anchor_is_mid_price(self):
+        eng = _engine()
+        cfg = eng.new_grid_config(51000.0, _vol(), epoch=0)
+        assert cfg.anchor == 51000.0
+
+    def test_symbol_and_epoch_carried_through(self):
+        eng = _engine(cfg=_cfg(symbol="ETH-PERP"))
+        cfg = eng.new_grid_config(51000.0, _vol(), epoch=3)
+        assert cfg.symbol == "ETH-PERP"
+        assert cfg.epoch == 3
+
+    def test_range_atr_is_core_range_constant(self):
+        eng = _engine()
+        cfg = eng.new_grid_config(51000.0, _vol(), epoch=0)
+        assert cfg.range_atr == CORE_RANGE_ATR
+
+    def test_step_bps_matches_effective_step(self):
+        eng = _engine()
+        vol = _vol()
+        cfg = eng.new_grid_config(51000.0, vol, epoch=0)
+        assert cfg.step_bps == eng.compute_effective_step(vol, 51000.0)
+
+
 # ===========================================================================
 # 1.8, Pending flips
 # ===========================================================================

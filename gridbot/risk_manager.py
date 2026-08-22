@@ -43,6 +43,12 @@ _MAX_CONTINUOUS_GAP_MS = 5 * 60 * 1000
 # to avoid coupling this pure risk-check module to MarketData.
 _TAKER_FEE_BPS = 5.0
 
+# Window used to judge vol stable/declining for re-anchor gating (design
+# section 5.1, condition 4). Split in half and compared so a short vol spike
+# right before a re-anchor decision still blocks it.
+_ANCHOR_VOL_TREND_WINDOW_MS = 15 * 60 * 1000
+_ANCHOR_VOL_RISE_TOLERANCE = 1.05
+
 
 class RiskAction(Enum):
     """Actions the RiskManager can recommend."""
@@ -648,6 +654,23 @@ class RiskManager:
     # ------------------------------------------------------------------
     # Vol history management
     # ------------------------------------------------------------------
+
+    def is_vol_stable_or_declining(self, symbol: str, now_ms: int) -> bool:
+        """Condition 4 of the re-anchor gate (design section 5.1).
+
+        Compares the mean realized vol of the trailing window's second half
+        against its first half. Insufficient samples default to False
+        (conservative: don't re-anchor without evidence vol isn't rising).
+        """
+        cutoff = now_ms - _ANCHOR_VOL_TREND_WINDOW_MS
+        samples = [(ts, v) for ts, v in self._vol_history.get(symbol, []) if ts >= cutoff]
+        if len(samples) < 4:
+            return False
+
+        mid = len(samples) // 2
+        first_avg = sum(v for _, v in samples[:mid]) / mid
+        second_avg = sum(v for _, v in samples[mid:]) / (len(samples) - mid)
+        return second_avg <= first_avg * _ANCHOR_VOL_RISE_TOLERANCE
 
     def record_vol(self, symbol: str, timestamp_ms: int, realized_vol: float) -> None:
         """Record a vol observation for percentile calculations.

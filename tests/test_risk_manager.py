@@ -342,6 +342,52 @@ class TestVolHistoryContinuity:
         assert rm._vol_history_sufficient("BTC-PERP") is False
 
 
+class TestVolStabilityForReanchor:
+    """is_vol_stable_or_declining: condition 4 of the re-anchor gate
+    (section 5.1). Compares the trailing window's first half to its
+    second half; declining/flat vol allows a re-anchor, rising vol blocks
+    one."""
+
+    def test_flat_vol_is_stable(self):
+        rm = _rm()
+        for i in range(6):
+            rm.record_vol("BTC-PERP", i * 3 * 60 * 1000, 0.50)
+        assert rm.is_vol_stable_or_declining("BTC-PERP", now_ms=15 * 60 * 1000) is True
+
+    def test_declining_vol_is_stable(self):
+        rm = _rm()
+        samples = [0.80, 0.75, 0.70, 0.40, 0.35, 0.30]
+        for i, v in enumerate(samples):
+            rm.record_vol("BTC-PERP", i * 3 * 60 * 1000, v)
+        assert rm.is_vol_stable_or_declining("BTC-PERP", now_ms=15 * 60 * 1000) is True
+
+    def test_rising_vol_is_not_stable(self):
+        rm = _rm()
+        samples = [0.30, 0.30, 0.35, 0.80, 0.85, 0.90]
+        for i, v in enumerate(samples):
+            rm.record_vol("BTC-PERP", i * 3 * 60 * 1000, v)
+        assert rm.is_vol_stable_or_declining("BTC-PERP", now_ms=15 * 60 * 1000) is False
+
+    def test_insufficient_samples_defaults_false(self):
+        rm = _rm()
+        rm.record_vol("BTC-PERP", 0, 0.50)
+        rm.record_vol("BTC-PERP", 60_000, 0.50)
+        assert rm.is_vol_stable_or_declining("BTC-PERP", now_ms=120_000) is False
+
+    def test_samples_outside_window_ignored(self):
+        """A rising spike that's aged out of the 15-minute trend window
+        shouldn't block re-anchoring; only the trailing window counts."""
+        rm = _rm()
+        # Old spike, now outside the trend window.
+        rm.record_vol("BTC-PERP", 0, 0.90)
+        rm.record_vol("BTC-PERP", 60_000, 0.95)
+        # Recent, flat, inside the window.
+        now_ms = 30 * 60 * 1000
+        for i in range(6):
+            rm.record_vol("BTC-PERP", now_ms - i * 3 * 60 * 1000, 0.40)
+        assert rm.is_vol_stable_or_declining("BTC-PERP", now_ms=now_ms) is True
+
+
 # ---------------------------------------------------------------------------
 # TestBreakoutDetection
 # ---------------------------------------------------------------------------

@@ -534,6 +534,26 @@ class GridEngine:
         """Compute the new anchor price after re-centering is approved."""
         return mid_price
 
+    def new_grid_config(
+        self, mid_price: float, vol_metrics: VolMetrics, epoch: int
+    ) -> GridConfig:
+        """Build a fresh GridConfig for initial anchor establishment or a
+        re-anchor. Used by the Supervisor, never mutated by GridEngine
+        itself (no side effects).
+
+        Snapshots the step at the current ATR/vol read; per section 7.3
+        this value is not recomputed until the next anchor event, so
+        config_hash (and therefore client order IDs) stay stable across
+        cycles between re-anchors.
+        """
+        return GridConfig(
+            symbol=self._config.symbol,
+            anchor=mid_price,
+            range_atr=CORE_RANGE_ATR,
+            step_bps=self.compute_effective_step(vol_metrics, mid_price),
+            epoch=epoch,
+        )
+
     # ------------------------------------------------------------------
     # Pending flips (section 7.6)
     # ------------------------------------------------------------------
