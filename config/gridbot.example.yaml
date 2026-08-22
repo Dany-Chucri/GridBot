@@ -2,9 +2,9 @@
 # Copy to gridbot.yaml and adjust values.
 # Omitted fields use defaults from docs/design.md sections 11.1-11.3.
 
-testnet: true  # Start on testnet — switch to false for mainnet
+testnet: true  # Start on testnet, switch to false for mainnet
 
-# Master trading account address (NOT an API/agent wallet's own address — see
+# Master trading account address (NOT an API/agent wallet's own address, see
 # deploy/gridbot.env.example for how GRIDBOT_PRIVATE_KEY relates to this).
 wallet_address: "0x..."
 
@@ -46,7 +46,7 @@ operational:
   stagger_initial_levels: 5
 
 # Alert delivery (design doc section 10.3). Disabled by default. Secrets
-# (bot token, webhook URL) go in the environment, not here — see
+# (bot token, webhook URL) go in the environment, not here, see
 # deploy/gridbot.env.example.
 alerting:
   telegram:
@@ -54,4 +54,4 @@ alerting:
     chat_id: ""       # non-secret; get via @userinfobot or getUpdates
   discord:
     enabled: false
-  min_severity: WARNING  # INFO | WARNING | CRITICAL — filters what's sent
+  min_severity: WARNING  # INFO | WARNING | CRITICAL, filters what's sent

@@ -26,7 +26,7 @@ class BotState(Enum):
     COOLDOWN = auto()      # Post-breakout/vol-kill cooldown
     FLATTENING = auto()    # Emergency flatten in progress (section 6.7)
     MAINTENANCE = auto()   # Exchange maintenance detected
-    DEAD = auto()          # Kill switch fired — requires manual restart
+    DEAD = auto()          # Kill switch fired, requires manual restart
     SHUTTING_DOWN = auto() # Graceful shutdown in progress
 
 
@@ -42,8 +42,8 @@ class GridLayer(Enum):
 
 
 class TimeInForce(Enum):
-    GTC = "gtc"       # Good-Til-Cancel — resting grid orders
-    IOC = "ioc"       # Immediate-Or-Cancel — emergency flatten only
+    GTC = "gtc"       # Good-Til-Cancel, resting grid orders
+    IOC = "ioc"       # Immediate-Or-Cancel, emergency flatten only
     ALO = "alo"       # Post-Only / Add Liquidity Only
 
 

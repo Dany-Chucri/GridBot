@@ -1,4 +1,4 @@
-"""Tests for PnLMonitor — PnL tracking, funding, and exchange cross-check."""
+"""Tests for PnLMonitor, PnL tracking, funding, and exchange cross-check."""
 
 import pytest
 
@@ -254,9 +254,9 @@ class TestCrosscheck:
         mon = PnLMonitor(_cfg(divergence_threshold=50.0, crosscheck_interval=60.0))
         mon._realized_pnl["BTC-PERP"] = 100.0
         mon._funding_payments["BTC-PERP"] = 0.0
-        # First check passes — no divergence
+        # First check passes, no divergence
         await mon.crosscheck("BTC-PERP", 105.0, now_ms=0)
-        # Second check within interval — should return cached False even though exchange_pnl would diverge
+        # Second check within interval, should return cached False even though exchange_pnl would diverge
         result = await mon.crosscheck("BTC-PERP", 999.0, now_ms=30_000)
         assert result is False
 
@@ -265,10 +265,10 @@ class TestCrosscheck:
         mon = PnLMonitor(_cfg(divergence_threshold=50.0, crosscheck_interval=60.0))
         mon._realized_pnl["BTC-PERP"] = 100.0
         mon._funding_payments["BTC-PERP"] = 0.0
-        # First check — diverged
+        # First check, diverged
         await mon.crosscheck("BTC-PERP", 999.0, now_ms=0)
         assert mon.is_diverged("BTC-PERP") is True
-        # Within interval — returns cached True
+        # Within interval, returns cached True
         result = await mon.crosscheck("BTC-PERP", 100.0, now_ms=30_000)
         assert result is True
 
@@ -279,7 +279,7 @@ class TestCrosscheck:
         mon._funding_payments["BTC-PERP"] = 0.0
         # First check
         await mon.crosscheck("BTC-PERP", 105.0, now_ms=0)
-        # After interval — should actually run
+        # After interval, should actually run
         result = await mon.crosscheck("BTC-PERP", 999.0, now_ms=60_001)
         assert result is True
         assert mon.is_diverged("BTC-PERP") is True

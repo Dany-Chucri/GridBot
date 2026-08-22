@@ -1,4 +1,4 @@
-"""OrderManager — the ONLY module that talks to the exchange for order ops.
+"""OrderManager, the ONLY module that talks to the exchange for order ops.
 
 Responsibilities (design doc section 3.2):
 - Compute diffs between desired orders and actual open orders (section 7.2)
@@ -130,7 +130,7 @@ class OrderManager:
         )
         equity = float(state.get("marginSummary", {}).get("accountValue", 0))
         logger.info(
-            "OrderManager initialized — wallet=%s equity=%.2f testnet=%s",
+            "OrderManager initialized, wallet=%s equity=%.2f testnet=%s",
             self._wallet_address[:10] + "...",
             equity,
             self._config.testnet,
@@ -167,7 +167,7 @@ class OrderManager:
         """
         if mid_price <= 0 and desired:
             logger.warning(
-                "Reconcile %s: mid_price=%.2f — ALO retries will be suppressed",
+                "Reconcile %s: mid_price=%.2f, ALO retries will be suppressed",
                 symbol, mid_price,
             )
 
@@ -230,7 +230,7 @@ class OrderManager:
             extra_cancels.extend(cancel_oids)
 
             # Also cancel the opposite direction's backstop in case the
-            # position flipped sign since the last update — otherwise that
+            # position flipped sign since the last update, otherwise that
             # stale, differently-cloid'd trigger is orphaned on the exchange.
             other_direction = "short" if direction == "long" else "long"
             other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
@@ -313,7 +313,7 @@ class OrderManager:
 
         # Build a signature-based lookup for matching without cloid.
         # Use a list per signature to handle multiple orders at the same
-        # (price, side, size, reduce_only) — e.g. pending flips at the
+        # (price, side, size, reduce_only), e.g. pending flips at the
         # same price.
         def _sig(price: float, side: OrderSide, size: float, reduce_only: bool) -> str:
             return f"{price:.8f}|{side.value}|{size:.8f}|{reduce_only}"
@@ -380,7 +380,7 @@ class OrderManager:
     ) -> None:
         """Submit cancel + place as batch requests.
 
-        Hyperliquid batch operations are NOT transactional — individual orders
+        Hyperliquid batch operations are NOT transactional, individual orders
         within a batch can fail independently. The implementation handles
         partially-applied batch state.
 
@@ -550,7 +550,7 @@ class OrderManager:
         `extra_requests` are non-grid raw placement dicts appended after
         `placements` in the same batch (currently: the backstop trigger
         order from reconcile_with_backstop/update_backstop). Their status
-        entries sit at statuses[len(placements):] and must be checked too —
+        entries sit at statuses[len(placements):] and must be checked too -
         otherwise a rejected backstop leg is silently invisible even though
         the overall batch status reads "ok".
 
@@ -609,7 +609,7 @@ class OrderManager:
                 # Check extra (backstop) statuses, which sit after the grid
                 # placements' statuses in the same response array. Design doc
                 # section 10.3 rates "backstop order update failed" as a
-                # Warning-severity alert (not Critical — the bot's own
+                # Warning-severity alert (not Critical, the bot's own
                 # breakout/flatten logic is still the primary defense; the
                 # backstop is a fallback for when that fails too).
                 for j, extra in enumerate(extra_requests):
@@ -617,14 +617,14 @@ class OrderManager:
                     if idx >= len(statuses):
                         logger.warning(
                             "Backstop order status missing from batch response "
-                            "for %s (idx=%d, statuses=%d) — position may be unprotected",
+                            "for %s (idx=%d, statuses=%d), position may be unprotected",
                             extra.get("coin", "?"), idx, len(statuses),
                         )
                         continue
                     s = statuses[idx]
                     if not self._is_order_success(s):
                         logger.warning(
-                            "Backstop order update failed for %s: %s — position "
+                            "Backstop order update failed for %s: %s, position "
                             "may be unprotected (section 6.8)",
                             extra.get("coin", "?"), s,
                         )
@@ -632,7 +632,7 @@ class OrderManager:
             logger.error("Place batch error: %s", result.get("response", ""))
             if extra_requests:
                 logger.warning(
-                    "Backstop order update failed for batch errored — "
+                    "Backstop order update failed for batch errored, "
                     "position may be unprotected: %s",
                     result.get("response", ""),
                 )
@@ -858,7 +858,7 @@ class OrderManager:
         # Determine position direction
         pos_size = position.size if position else 0.0
         if abs(pos_size) < 1e-12:
-            # No position — cancel backstops for both directions
+            # No position, cancel backstops for both directions
             for d in ("long", "short"):
                 cloid = self._generate_backstop_id(symbol, d, config_hash)
                 await self._cancel_existing_backstop(symbol, expected_cloid=cloid)
@@ -885,7 +885,7 @@ class OrderManager:
         # direction cloids, not just the current one: if position flipped
         # sign since the last update (long->short or vice versa), the old
         # direction's backstop has a different cloid and would otherwise be
-        # left orphaned on the exchange — violating "do not leave orphaned
+        # left orphaned on the exchange, violating "do not leave orphaned
         # triggers" (section 6.8 item 3).
         other_direction = "short" if direction == "long" else "long"
         other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
@@ -1089,7 +1089,7 @@ class OrderManager:
         # Step 5: Dead state check
         if remaining > min_order_size:
             logger.critical(
-                "FLATTEN FAILED for %s: residual=%.6f — manual intervention required",
+                "FLATTEN FAILED for %s: residual=%.6f, manual intervention required",
                 symbol,
                 remaining,
             )
@@ -1119,7 +1119,7 @@ class OrderManager:
     ) -> None:
         """Send a single IOC reduce-only order for flattening.
 
-        Submitted as a single order (not batch) — flatten is urgent.
+        Submitted as a single order (not batch), flatten is urgent.
         """
         loop = asyncio.get_running_loop()
         coin = self._to_coin(symbol)

@@ -63,7 +63,7 @@ async def run(args: argparse.Namespace) -> None:
         supervisor.set_alert_callback(alert_callback)
     else:
         logger.warning(
-            "No alert channel configured — critical events (kill switch, "
+            "No alert channel configured, critical events (kill switch, "
             "flatten failure, backstop trigger) will only appear in logs"
         )
 

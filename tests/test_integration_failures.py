@@ -276,7 +276,7 @@ class TestKillSwitch:
         state.bot_state = BotState.DEAD
 
         # Even though risk says CONTINUE, _run_cycle should not have been
-        # called (main loop skips DEAD assets) — but we call _run_cycle
+        # called (main loop skips DEAD assets), but we call _run_cycle
         # directly here to confirm the cycle itself is a no-op style guard
         # isn't present; the main loop guard is what matters, so assert on
         # that.
@@ -388,8 +388,8 @@ class TestOrphanCleanupOnRestart:
     @pytest.mark.asyncio
     async def test_unknown_exchange_orders_are_cancelled_on_recovery(self, tmp_path):
         """Orders on the exchange whose cloids aren't in the persisted state
-        are treated as orphans and cancelled during recovery (CLAUDE.md:
-        'don't cancel legitimate matched orders', orphans only)."""
+        are treated as orphans and cancelled during recovery. Legitimate
+        matched orders are left alone; only orphans are cancelled."""
         exchange = FakeExchange()
         # Two orders on the exchange; only one is known locally
         known = OpenOrder(1, "cloid-known", "BTC-PERP", 49_900.0, 0.1, 0.1, OrderSide.BUY)

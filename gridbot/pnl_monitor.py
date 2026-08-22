@@ -1,4 +1,4 @@
-"""PnL / Funding Monitor — analytics and funding tracking.
+"""PnL / Funding Monitor, analytics and funding tracking.
 
 Responsibilities (design doc section 3.2):
 - Track realized PnL from fills (local ledger)
@@ -6,7 +6,7 @@ Responsibilities (design doc section 3.2):
 - Monitor funding rate and bias
 - If local vs exchange PnL diverge: log alert, defer to exchange numbers
 
-The exchange is truth — local ledger is for analytics only.
+The exchange is truth, local ledger is for analytics only.
 """
 
 from __future__ import annotations
@@ -73,10 +73,10 @@ class PnLMonitor:
         new_size = old_size + signed_delta
 
         if old_size == 0.0:
-            # Opening from flat — just set entry
+            # Opening from flat, just set entry
             self._avg_entry[sym] = fill.price
         elif _same_sign(old_size, signed_delta):
-            # Increasing position — update weighted average entry
+            # Increasing position, update weighted average entry
             self._avg_entry[sym] = (
                 (self._avg_entry[sym] * abs(old_size) + fill.price * fill.size)
                 / abs(new_size)
@@ -92,10 +92,10 @@ class PnLMonitor:
             self._realized_pnl[sym] += pnl
 
             if _same_sign(old_size, new_size) or new_size == 0.0:
-                # Partial or full close — avg_entry stays unchanged
+                # Partial or full close, avg_entry stays unchanged
                 pass
             else:
-                # Flipped to opposite side — reset entry to fill price
+                # Flipped to opposite side, reset entry to fill price
                 self._avg_entry[sym] = fill.price
 
         self._position_size[sym] = new_size

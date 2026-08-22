@@ -49,8 +49,8 @@ Phases 1-3 have zero cross-dependencies and can be developed in parallel. Phase 
 Completed. Types, enums, dataclasses, config loading, project scaffolding, and module stubs are in place.
 
 **Delivered:**
-- `gridbot/types.py` — All shared types
-- `gridbot/config.py` — Config dataclasses, YAML loader, BTC/ETH defaults
+- `gridbot/types.py`: All shared types
+- `gridbot/config.py`: Config dataclasses, YAML loader, BTC/ETH defaults
 - All module files with method signatures and docstrings
 - `pyproject.toml` with dependencies and tooling
 - Test scaffolding
@@ -82,7 +82,7 @@ effective_min_step = max(
 Where `ATR_based_step` is derived from ATR relative to price, scaled to fall within `[grid_step_bps_min, grid_step_bps_max]`.
 
 Subtasks:
-- Implement `_compute_grid_slippage_buffer(vol_metrics)` — the dynamic slippage buffer from section 5.7 that scales with realized vol vs baseline.
+- Implement `_compute_grid_slippage_buffer(vol_metrics)`, the dynamic slippage buffer from section 5.7 that scales with realized vol vs baseline.
 - Clamp the final step to `[grid_step_bps_min, grid_step_bps_max]` from config.
 - Use conservative constants: `maker_fee = 0.2 bps`, `safety_margin = 1.5 bps`.
 
@@ -107,7 +107,7 @@ order_size = clamp(order_size, min_size, max_size)
 Subtasks:
 - Derive `target_risk_per_level` from `capital_allocation * account_equity / levels_per_side`.
 - Apply the vol inverse scaling.
-- Clamp to `[min_size, max_size]`. Use placeholder constants for `min_size` (BTC: 0.001, ETH: 0.01) — these will be validated against testnet in Phase 8. Set `max_size` as a config-driven fraction of `max_abs_position / levels_per_side`.
+- Clamp to `[min_size, max_size]`. Use placeholder constants for `min_size` (BTC: 0.001, ETH: 0.01), these will be validated against testnet in Phase 8. Set `max_size` as a config-driven fraction of `max_abs_position / levels_per_side`.
 
 **Tests:**
 - Size decreases when vol increases (inverse relationship).
@@ -125,9 +125,9 @@ Zone classification:
 - `HARD_CAP`: `abs(pos) >= hard_cap`
 
 Skew behavior:
-- `NORMAL` — symmetric, no modification.
-- `SOFT_CAP` — reduce size on exposure-increasing side by a factor proportional to `(abs(pos) - soft_cap) / (hard_cap - soft_cap)`. Increase unwind side by the same factor. Determine "exposure-increasing side" from the sign of position.
-- `HARD_CAP` — remove all levels on the exposure-increasing side. Mark remaining unwind levels as `reduce_only=True`.
+- `NORMAL`: symmetric, no modification.
+- `SOFT_CAP`: reduce size on exposure-increasing side by a factor proportional to `(abs(pos) - soft_cap) / (hard_cap - soft_cap)`. Increase unwind side by the same factor. Determine "exposure-increasing side" from the sign of position.
+- `HARD_CAP`: remove all levels on the exposure-increasing side. Mark remaining unwind levels as `reduce_only=True`.
 
 **Tests:**
 - Zone boundaries are correct at exact threshold values.
@@ -163,7 +163,7 @@ Subtasks:
 
 Active when `abs(mid - anchor) > core_range AND abs(mid - anchor) < breakout_threshold`. Uses `expansion_levels_per_side` levels at `step_bps * expansion_step_mult` spacing, within `+/- expansion_range_atr * ATR`.
 
-**Important distinction:** The activation upper bound (`breakout_atr_distance`: BTC 4.5, ETH 4.0 ATR) and the expansion level range (`expansion_range_atr`: BTC 4.0, ETH 3.5 ATR) are different config values. Levels are generated out to `expansion_range_atr`, but the activation condition uses `breakout_atr_distance`. The gap between them (0.5 ATR) is a buffer zone where the expansion grid is active but no levels are placed — this allows mean-reversion at extreme levels before the breakout flattener fires (design doc section 6.3).
+**Important distinction:** The activation upper bound (`breakout_atr_distance`: BTC 4.5, ETH 4.0 ATR) and the expansion level range (`expansion_range_atr`: BTC 4.0, ETH 3.5 ATR) are different config values. Levels are generated out to `expansion_range_atr`, but the activation condition uses `breakout_atr_distance`. The gap between them (0.5 ATR) is a buffer zone where the expansion grid is active but no levels are placed, this allows mean-reversion at extreme levels before the breakout flattener fires (design doc section 6.3).
 
 Subtasks:
 - Check activation condition: mid price beyond core range but within breakout distance (`breakout_atr_distance * ATR`).
@@ -225,7 +225,7 @@ Convert pending flips into `DesiredOrder` objects and merge into the desired set
 
 Subtasks:
 - Generate a `DesiredOrder` for each `PendingFlip` using `make_client_order_id` with a "flip" prefix or distinct identifier.
-- Dedup against existing desired orders at the same price/side (flip and grid level might target the same price — design doc section 5.3).
+- Dedup against existing desired orders at the same price/side (flip and grid level might target the same price, design doc section 5.3).
 - Apply inventory cap rules: hard cap converts exposure-increasing flips to reduce-only.
 - Merge into the desired list.
 
@@ -251,7 +251,7 @@ Orchestrates all sub-methods:
 8. Convert `GridLevel` list to `DesiredOrder` list with deterministic IDs.
 9. Include pending flips.
 
-**Note:** GridEngine does not compute regime — it receives `state.regime` which is set by RiskManager (Phase 2). All Phase 1 tests must set `state.regime` explicitly (e.g., `state.regime = Regime.RANGE`) since the detection logic is not available yet.
+**Note:** GridEngine does not compute regime, it receives `state.regime` which is set by RiskManager (Phase 2). All Phase 1 tests must set `state.regime` explicitly (e.g., `state.regime = Regime.RANGE`) since the detection logic is not available yet.
 
 **Tests:**
 - Returns empty for TREND, HIGH_VOL, UNKNOWN regimes.
@@ -277,7 +277,7 @@ Orchestrates all sub-methods:
 **Dependencies:** None (uses only types and config)
 **Design doc:** Sections 6.1-6.8, 8.1-8.3, 9.2
 
-Like GridEngine, RiskManager is pure logic — it evaluates state and returns decisions. No I/O.
+Like GridEngine, RiskManager is pure logic, it evaluates state and returns decisions. No I/O.
 
 ### 2.1 Regime detection [DONE]
 
@@ -285,7 +285,7 @@ Like GridEngine, RiskManager is pure logic — it evaluates state and returns de
 **Design doc:** Sections 8.1-8.2
 
 RANGE requires ALL signals to agree:
-1. Vol below `vol_pause_threshold` — requires percentile calculation against `_vol_history`.
+1. Vol below `vol_pause_threshold`, requires percentile calculation against `_vol_history`.
 2. Price within `X * ATR` of moving average (e.g., `2.0 * ATR`).
 3. No breakout within `cooldown_minutes`.
 
@@ -302,8 +302,8 @@ Subtasks:
 
 On first deployment (or after DB wipe), the 7-day vol history is empty. The bot uses a **48-hour minimum window, expanding to 7 days**, with an explicit conservative bias during bootstrap:
 
-- **< 48h of history:** Return `UNKNOWN`. The bot does not trade. This is the hard floor — percentiles from less than 48h of data are too noisy to act on.
-- **48h–7d of history:** Compute percentiles over the available window. Apply a conservative bias: when the percentile result is ambiguous (i.e., close to a threshold boundary), resolve toward the more restrictive regime. Concretely, tighten the `vol_pause_percentile` threshold during bootstrap — e.g., use the 70th percentile instead of 80th as the pause trigger until the window reaches 7 days. This ensures the bot errs toward HIGH_VOL/pause rather than false RANGE during the noisy early window.
+- **< 48h of history:** Return `UNKNOWN`. The bot does not trade. This is the hard floor, percentiles from less than 48h of data are too noisy to act on.
+- **48h–7d of history:** Compute percentiles over the available window. Apply a conservative bias: when the percentile result is ambiguous (i.e., close to a threshold boundary), resolve toward the more restrictive regime. Concretely, tighten the `vol_pause_percentile` threshold during bootstrap, e.g., use the 70th percentile instead of 80th as the pause trigger until the window reaches 7 days. This ensures the bot errs toward HIGH_VOL/pause rather than false RANGE during the noisy early window.
 - **>= 7d of history:** Steady-state behavior. Use configured thresholds as-is.
 
 The `_vol_history_sufficient(symbol) -> bool` helper exposes whether the minimum window has been met (used by Supervisor to log bootstrap status).
@@ -393,7 +393,7 @@ Two tiers:
 
 Rolling 24h and 168h windows. Drawdown = `(peak_equity - current_equity) / peak_equity` over the rolling window. Includes unrealized PnL.
 
-**Data flow:** `current_equity` is always exchange-reported account equity, fetched by the Supervisor via REST each cycle (see Phase 7.5 step 1) and passed into `evaluate()`. RiskManager never fetches equity itself — the exchange is the sole source of truth for this value.
+**Data flow:** `current_equity` is always exchange-reported account equity, fetched by the Supervisor via REST each cycle (see Phase 7.5 step 1) and passed into `evaluate()`. RiskManager never fetches equity itself, the exchange is the sole source of truth for this value.
 
 Subtasks:
 - Maintain `_equity_history` as list of `(timestamp_ms, equity)` tuples. The Supervisor calls `record_equity(timestamp_ms, equity)` each cycle with the exchange-reported value.
@@ -450,7 +450,7 @@ portfolio_delta = abs(sum(pos.size * pos.mark_price for pos in positions))
 portfolio_cap = total_risk_budget * portfolio_delta_mult * account_equity
 ```
 
-Use **mark price** (not mid price or avg entry) for delta computation — mark price is the exchange's fair-value estimate and the basis for margin/liquidation calculations.
+Use **mark price** (not mid price or avg entry) for delta computation, mark price is the exchange's fair-value estimate and the basis for margin/liquidation calculations.
 
 Returns `True` if cap breached. The Supervisor uses this to tighten individual caps.
 
@@ -557,18 +557,18 @@ Implement all load/save methods. Each save is a single transaction (`INSERT OR R
 Methods to implement:
 - `save_grid_config` / `load_grid_config`
 - `save_position` / `load_position`
-- `save_open_orders` / `load_open_orders` — bulk replace: delete all for symbol, insert batch.
-- `record_fill` / `get_fills` — append-only. `get_fills` supports `since_ms` filter.
+- `save_open_orders` / `load_open_orders`, bulk replace: delete all for symbol, insert batch.
+- `record_fill` / `get_fills`, append-only. `get_fills` supports `since_ms` filter.
 - `save_regime` / `load_regime`
-- `save_pending_flips` / `load_pending_flips` — bulk replace per symbol.
-- `save_bot_state` / `load_bot_state` — serialize `AssetState` to JSON.
+- `save_pending_flips` / `load_pending_flips`, bulk replace per symbol.
+- `save_bot_state` / `load_bot_state`, serialize `AssetState` to JSON.
 - `update_heartbeat` / `get_last_heartbeat`
 
 ### 3.3 Close [DONE]
 
-Implement `close()` — commit any pending transaction, close connection.
+Implement `close()`, commit any pending transaction, close connection.
 
-**Tests (`tests/test_state_store.py` — new file):**
+**Tests (`tests/test_state_store.py`, new file):**
 - Round-trip: save then load each data type, verify equality.
 - Fill append: multiple fills, `get_fills` returns all; `since_ms` filter works.
 - Bulk replace: save orders, save again with different set, load returns only latest set.
@@ -598,12 +598,12 @@ This is the first module that talks to external systems. Tests will need either 
 
 Subtasks:
 - Establish WebSocket connection to `config.ws_url`.
-- Subscribe to `l2Book` channel per asset (provides best bid/ask for spread computation and book depth). This is the primary source for bid, ask, and mid price. The `allMids` channel does **not** provide bid/ask — only mid prices — so it is insufficient for spread computation.
+- Subscribe to `l2Book` channel per asset (provides best bid/ask for spread computation and book depth). This is the primary source for bid, ask, and mid price. The `allMids` channel does **not** provide bid/ask, only mid prices, so it is insufficient for spread computation.
 - Subscribe to `trades` channel per asset (for vol computation).
 - Subscribe to `orderUpdates` for the user's account (requires wallet address).
 - Implement reconnection with exponential backoff.
 - Set `_ws_connected` flag. Track `_last_ws_message_ms`.
-- **Fallback:** If `l2Book` subscription fails or data is stale, derive mid price from `allMids` and estimate spread from recent trade data or use a conservative default. This is a last resort — `l2Book` is the primary path.
+- **Fallback:** If `l2Book` subscription fails or data is stale, derive mid price from `allMids` and estimate spread from recent trade data or use a conservative default. This is a last resort, `l2Book` is the primary path.
 
 ### 4.2 Price update handling [DONE]
 
@@ -661,7 +661,7 @@ Subtasks:
 
 Either derive from WS (if available) or fetch via REST info endpoint. Store in `_mark_prices[symbol]`.
 
-**Tests (`tests/test_market_data.py` — new file):**
+**Tests (`tests/test_market_data.py`, new file):**
 - Vol computation: feed synthetic trade data, verify realized vol calculation against hand-computed value.
 - ATR computation: feed synthetic candles, verify ATR.
 - Spread computation: verify from bid/ask.
@@ -690,7 +690,7 @@ Either derive from WS (if available) or fetch via REST info endpoint. Store in `
 
 Subtasks:
 - Append fill to `_fills[symbol]` deque.
-- Update `_realized_pnl[symbol]` by computing fill PnL. Track a running **average-cost** entry price per symbol (not FIFO) — this matches Hyperliquid's own PnL reporting and simplifies the exchange cross-check in 5.3.
+- Update `_realized_pnl[symbol]` by computing fill PnL. Track a running **average-cost** entry price per symbol (not FIFO), this matches Hyperliquid's own PnL reporting and simplifies the exchange cross-check in 5.3.
 
 The PnL computation for each fill (average-cost method):
 - If fill increases position: update `avg_entry = (avg_entry * old_size + fill.price * fill.size) / new_size`. No realized PnL.
@@ -723,7 +723,7 @@ total = realized_pnl + unrealized_pnl + funding
 
 If diverged, use exchange-reported unrealized.
 
-**Tests (`tests/test_pnl_monitor.py` — new file):**
+**Tests (`tests/test_pnl_monitor.py`, new file):**
 - Fill recording updates realized PnL correctly for long and short positions.
 - Funding payments accumulate.
 - Cross-check detects divergence above threshold.
@@ -765,7 +765,7 @@ Subtasks:
 - Build a lookup of current orders keyed by `client_order_id`.
 - For each desired order: if a matching current order exists (same price, side, size, reduce_only), it's a no-op. Otherwise, it needs placement and the old order (if any) needs cancellation.
 - Current orders with no matching desired order → cancel.
-- This is a pure function — highly testable.
+- This is a pure function, highly testable.
 
 **Tests:**
 - No diff when desired matches current.
@@ -779,7 +779,7 @@ Subtasks:
 **Method:** `_submit_batch(cancels, placements)`
 **Design doc:** Section 2.3
 
-**Important:** Hyperliquid batch operations are **not transactional** — individual orders within a batch can fail independently (e.g., an ALO rejection does not roll back successful cancels in the same batch). The implementation must handle partially-applied batch state.
+**Important:** Hyperliquid batch operations are **not transactional**, individual orders within a batch can fail independently (e.g., an ALO rejection does not roll back successful cancels in the same batch). The implementation must handle partially-applied batch state.
 
 Subtasks:
 - Build the batch request using the Hyperliquid SDK's batch order API.
@@ -854,9 +854,9 @@ This is a state machine. Implement the full protocol:
 
 **Method:** `_send_flatten_ioc(symbol, side, size, limit_price)`
 - Build IOC order with `reduce_only=True`.
-- Submit as single order (not batch — flatten is urgent).
+- Submit as single order (not batch, flatten is urgent).
 
-**Note — fill price accuracy for IOC orders:** The `orderUpdates` WS channel only provides `limitPx` (the order's limit price), not the actual execution price. For ALO grid orders this is fine (fill price == limit price by definition), but IOC flatten fills can execute at worse prices. To get accurate fill prices, fees, and maker/taker status for flatten fills, MarketData should subscribe to the `userFills` WS channel (`{"type": "userFills", "user": "<address>"}`), which provides `px` (execution price), `fee`, and `crossed` (true = taker). The `oid` field joins back to `orderUpdates`. The flatten retry loop already re-queries position via REST for remaining size, but `userFills` is needed for accurate PnL attribution and slippage measurement on taker fills.
+**Note, fill price accuracy for IOC orders:** The `orderUpdates` WS channel only provides `limitPx` (the order's limit price), not the actual execution price. For ALO grid orders this is fine (fill price == limit price by definition), but IOC flatten fills can execute at worse prices. To get accurate fill prices, fees, and maker/taker status for flatten fills, MarketData should subscribe to the `userFills` WS channel (`{"type": "userFills", "user": "<address>"}`), which provides `px` (execution price), `fee`, and `crossed` (true = taker). The `oid` field joins back to `orderUpdates`. The flatten retry loop already re-queries position via REST for remaining size, but `userFills` is needed for accurate PnL attribution and slippage measurement on taker fills.
 
 ### 6.8 Cancel all [DONE]
 
@@ -919,7 +919,7 @@ Subtasks:
 - Fetch account equity from exchange.
 - For each asset, call `risk_manager.preflight_check(asset_config, equity)`.
 - If any violations: log them, refuse to start (exit with non-zero code).
-- This is a hard gate — no operator override allowed.
+- This is a hard gate, no operator override allowed.
 
 ### 7.4 Main event loop [DONE]
 
@@ -940,7 +940,7 @@ while not self._shutdown_requested:
     await asyncio.sleep(self._config.operational.cycle_interval_seconds)
 ```
 
-**Note on timers:** The main loop tick (`cycle_interval_seconds`) and REST reconciliation interval (`reconcile_interval_seconds`) are separate concerns. The cycle tick drives grid recomputation and risk checks (should be short, ~1s). REST reconciliation is a backup consistency check (default: 5s) tracked by its own timer inside `_run_cycle` (see step 9 in 7.5). Do not conflate them — using `reconcile_interval_seconds` as the main loop sleep creates unnecessary latency for fill-driven grid updates.
+**Note on timers:** The main loop tick (`cycle_interval_seconds`) and REST reconciliation interval (`reconcile_interval_seconds`) are separate concerns. The cycle tick drives grid recomputation and risk checks (should be short, ~1s). REST reconciliation is a backup consistency check (default: 5s) tracked by its own timer inside `_run_cycle` (see step 9 in 7.5). Do not conflate them, using `reconcile_interval_seconds` as the main loop sleep creates unnecessary latency for fill-driven grid updates.
 
 Handle `BotState` transitions: RUNNING, COOLDOWN (wait for timer), FLATTENING (run flatten), MAINTENANCE (passive wait), DEAD (skip).
 
@@ -1078,7 +1078,7 @@ Wire up MarketData's fill detection to:
 
 This requires an event callback or queue pattern. MarketData detects fills via WS; the Supervisor routes them to the appropriate handlers.
 
-**Tests (`tests/test_supervisor.py` — new file):**
+**Tests (`tests/test_supervisor.py`, new file):**
 - Cycle execution with mocked modules: verify correct call order.
 - Risk action routing: each action triggers the right response.
 - Shutdown: verify cancel-but-no-flatten behavior.

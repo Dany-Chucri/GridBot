@@ -1,4 +1,4 @@
-"""Tests for OrderManager — diff computation, flip logic, ALO handling, and integration."""
+"""Tests for OrderManager, diff computation, flip logic, ALO handling, and integration."""
 
 import asyncio
 import hashlib
@@ -117,7 +117,7 @@ def _om(config: BotConfig | None = None) -> OrderManager:
 
 
 # ===========================================================================
-# Test: Diff Computation (section 7.2) — pure function, no mocks needed
+# Test: Diff Computation (section 7.2), pure function, no mocks needed
 # ===========================================================================
 
 
@@ -272,7 +272,7 @@ class TestOrderDiff:
 
 
 # ===========================================================================
-# Test: Flip Orders (section 7.5) — pure function, no mocks needed
+# Test: Flip Orders (section 7.5), pure function, no mocks needed
 # ===========================================================================
 
 
@@ -1073,7 +1073,7 @@ class TestBackstop:
     async def test_backstop_cancels_stale_opposite_direction_on_flip(self):
         """If position flipped sign since the last update, the OLD
         direction's backstop (different cloid) must also be cancelled, not
-        just the current direction's — otherwise it's orphaned."""
+        just the current direction's, otherwise it's orphaned."""
         om = _om()
         om._client = MagicMock()
         om._info = MagicMock()
@@ -1166,7 +1166,7 @@ class TestBuildOrderType:
 
 
 # ===========================================================================
-# Test: ALO Rejection Wiring (fix #1 — _handle_alo_rejection actually called)
+# Test: ALO Rejection Wiring (fix #1, _handle_alo_rejection actually called)
 # ===========================================================================
 
 
@@ -1228,7 +1228,7 @@ class TestAloRetryWiring:
         order = _desired(price=50000.0, side=OrderSide.BUY)
         await om._submit_batch([], [order], symbol="BTC-PERP", mid_price=0.0)
 
-        # Only one call — no retry
+        # Only one call, no retry
         om._client.bulk_orders.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1318,7 +1318,7 @@ class TestDuplicateSignatureMatching:
             _open(client_order_id="0x" + "d" * 32, order_id=2, price=50000.0, size=0.1, side=OrderSide.BUY),
         ]
         to_cancel, to_place = om._compute_diff(desired, current)
-        # Both should match by signature — no cancels, no places
+        # Both should match by signature, no cancels, no places
         assert to_cancel == []
         assert to_place == []
 
@@ -1647,7 +1647,7 @@ class TestResultChecking:
         }
 
         pos = _pos(size=0.5)
-        # Should not raise — just log the error
+        # Should not raise, just log the error
         await om.update_backstop("BTC-PERP", pos, 50000.0, 500.0, 4.5, 1.0)
 
 
@@ -1786,7 +1786,7 @@ class TestReconcileWithBackstop:
     @pytest.mark.asyncio
     async def test_rejected_backstop_leg_is_logged(self, caplog):
         """A rejected backstop leg must be surfaced even though the overall
-        batch status is 'ok' — this was previously silently swallowed
+        batch status is 'ok', this was previously silently swallowed
         because the status-parsing loop stopped at len(grid placements)."""
         om = _om()
         om._client = MagicMock()

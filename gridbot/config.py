@@ -59,7 +59,7 @@ class AssetConfig:
     # Inventory
     soft_cap_pct: float = 0.50
     # Derived by RiskManager.preflight_check from this asset's share of the
-    # shared risk budget (section 9.1) — total_risk_budget_pct * asset_weight
+    # shared risk budget (section 9.1), total_risk_budget_pct * asset_weight
     # * capital_allocation * leverage, converted to units via mid_price at
     # startup. Not a settable config value; any value here is overwritten.
     max_abs_position: float = 0.0
@@ -83,7 +83,7 @@ class AssetConfig:
 
     # Order execution
     post_only_max_retries: int = 3
-    tick_size: float = 1.0  # USD — per-asset tick size for ALO price nudging
+    tick_size: float = 1.0  # USD, per-asset tick size for ALO price nudging
 
     # Dynamic slippage (section 5.7)
     base_slippage_bps: float = 1.5
@@ -151,7 +151,7 @@ class OperationalConfig:
 @dataclass
 class AlertingConfig:
     """Non-secret alert-channel settings. Secrets (bot token, webhook URL) are
-    read from the environment only — see gridbot/alerting.py and
+    read from the environment only, see gridbot/alerting.py and
     deploy/gridbot.env.example.
     """
 
@@ -249,7 +249,7 @@ def _apply_overrides(config: BotConfig, raw: dict) -> None:
             config.alerting.min_severity = str(alerting_raw["min_severity"])
 
     if "assets" in raw:
-        # The YAML `assets:` list is authoritative for which assets run —
+        # The YAML `assets:` list is authoritative for which assets run -
         # replace config.assets entirely rather than merging onto BotConfig's
         # default two-asset list. Otherwise an asset omitted from the config
         # (e.g. a single-asset testnet soak) silently survives with full

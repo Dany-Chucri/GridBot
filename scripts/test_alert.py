@@ -4,11 +4,11 @@
 Loads config exactly the way `gridbot.main` does (config/gridbot.yaml +
 environment secrets) and fires real messages through
 `gridbot.alerting.build_alert_callback`, so a successful run means the
-soak's actual alert path — not just the HTTP call in isolation — works.
+soak's actual alert path, not just the HTTP call in isolation, works.
 
 By default sends one message at each of the three severities the bot
 actually uses (INFO, WARNING, CRITICAL) so you can confirm both delivery
-and `alerting.min_severity` filtering in one pass — e.g. with the default
+and `alerting.min_severity` filtering in one pass, e.g. with the default
 min_severity=WARNING, the CRITICAL and WARNING messages should arrive and
 the INFO one should not.
 
@@ -70,10 +70,10 @@ async def main() -> int:
         await callback(severity, f"test alert from scripts/test_alert.py ({severity})")
 
     print(
-        "Done — check the Telegram chat / Discord channel now against the "
+        "Done, check the Telegram chat / Discord channel now against the "
         "'expect' notes above. If a message that should have been delivered "
         "didn't arrive, look for a 'Telegram/Discord alert failed' ERROR line "
-        "above (bad token/webhook/chat_id) rather than an exception here — "
+        "above (bad token/webhook/chat_id) rather than an exception here, "
         "delivery failures are logged, not raised."
     )
     return 0

@@ -3,11 +3,11 @@
 These tests wire the real Supervisor, GridEngine, RiskManager, PnLMonitor, and
 StateStore (backed by a temp SQLite file) together against a FakeExchange that
 simulates the Hyperliquid boundary. This covers orchestration behaviour that
-pure-unit tests (test_supervisor.py) can't — state persistence across restart,
+pure-unit tests (test_supervisor.py) can't, state persistence across restart,
 module-to-module handoffs, and the full cycle dataflow.
 
 True testnet validation (real Hyperliquid credentials, 48h soak) is still
-required per design doc 10.5 — see docs/operations.md for the procedure.
+required per design doc 10.5, see docs/operations.md for the procedure.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from gridbot.types import (
 
 
 # ---------------------------------------------------------------------------
-# FakeExchange — a minimal in-memory simulator for integration tests.
+# FakeExchange, a minimal in-memory simulator for integration tests.
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +522,7 @@ class TestPersistenceAcrossRestart:
         await sup_a._run_cycle("BTC-PERP", sup_a._config.assets[0])
         await sup_a._shutdown()
 
-        # Second supervisor — same DB, exchange state preserves position
+        # Second supervisor, same DB, exchange state preserves position
         exchange_b = FakeExchange()
         exchange_b.positions["BTC-PERP"] = Position("BTC-PERP", 0.25, 49_500.0, 0.0)
         sup_b, store_b = await _build_supervisor(tmp_path, exchange_b, db_path=db_path)
@@ -611,13 +611,10 @@ class TestPnLCrosscheck:
 
         await sup._run_cycle("BTC-PERP", sup._config.assets[0])
 
-        # Note: this may still legitimately alert on REST/WS *order-count*
-        # divergence — the fake exchange harness doesn't simulate WS
-        # orderUpdates echoing back newly-placed orders, so local state
-        # hasn't caught up to the orders _reconcile() just placed by the
-        # time the same cycle's REST reconciliation step runs. That's a
-        # harness artifact, not a PnL crosscheck concern (section 10.6),
-        # which is what this test actually verifies.
+        # This may still legitimately alert on REST/WS order-count divergence,
+        # since the fake exchange doesn't echo newly-placed orders back
+        # through WS orderUpdates before the same cycle's REST reconciliation
+        # runs. This test only checks the PnL crosscheck (section 10.6).
         assert not any("pnl divergence" in msg.lower() for _sev, msg in alerts)
 
         sup._fill_task.cancel()

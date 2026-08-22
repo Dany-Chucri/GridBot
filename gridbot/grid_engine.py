@@ -1,4 +1,4 @@
-"""GridEngine — pure calculation module with no side effects.
+"""GridEngine, pure calculation module with no side effects.
 
 Responsibilities (design doc section 3.2):
 - Takes current anchor, range, step, regime, inventory state as inputs
@@ -301,7 +301,7 @@ class GridEngine:
         baseline = vol_metrics.baseline_vol
 
         if baseline <= 0:
-            # No baseline — return max (conservative)
+            # No baseline, return max (conservative)
             return cfg.max_slippage_bps
 
         vol_ratio = vol_metrics.realized_vol / baseline
@@ -579,7 +579,7 @@ class GridEngine:
             # Must match OrderManager.compute_flip_order's cloid scheme exactly
             # (not make_client_order_id's grid-level scheme) since that is the
             # ID the flip order was actually placed with on the exchange, and
-            # it must stay stable across re-anchoring (section 7.6) — it is
+            # it must stay stable across re-anchoring (section 7.6), it is
             # deliberately independent of grid_config_hash/epoch.
             flip_id_raw = f"flip|{flip.originating_fill_id}|{grid_config.symbol}|{flip.side.value}"
             digest = hashlib.sha256(flip_id_raw.encode()).hexdigest()

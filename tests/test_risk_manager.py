@@ -1,4 +1,4 @@
-"""Tests for RiskManager — safety constraint enforcement."""
+"""Tests for RiskManager, safety constraint enforcement."""
 
 import pytest
 
@@ -99,7 +99,7 @@ def _state(**overrides) -> AssetState:
 # Max gap RiskManager treats as "continuous" (mirrors
 # RiskManager._MAX_CONTINUOUS_GAP_MS). Seeded histories must stay under
 # this between consecutive samples, or _continuous_run only sees the
-# trailing segment — same as it would for a real gap/outage.
+# trailing segment, same as it would for a real gap/outage.
 _SAFE_STEP_MS = 4 * 60 * 1000
 
 
@@ -107,7 +107,7 @@ def _dense_span(span_ms: int, vol_low: float, vol_high: float | None = None,
                  start_ms: int = 0) -> list[tuple[int, float]]:
     """Build a vol-history list spanning span_ms with no internal gap
     approaching the continuity threshold, so RiskManager._continuous_run
-    treats it as one run — matches real record_vol() cadence (~1/s)."""
+    treats it as one run, matches real record_vol() cadence (~1/s)."""
     n = max(2, span_ms // _SAFE_STEP_MS + 1)
     vh = vol_high if vol_high is not None else vol_low
     return [
@@ -126,7 +126,7 @@ def _seed_vol_history(rm: RiskManager, symbol: str = "BTC-PERP",
                        start_ms: int = 0) -> int:
     """Seed vol history and return the timestamp of the last entry.
 
-    `n` is accepted for call-site compatibility but ignored — density is
+    `n` is accepted for call-site compatibility but ignored, density is
     always set by _SAFE_STEP_MS so the run stays continuous.
     """
     del n
@@ -170,7 +170,7 @@ class TestRegimeDetection:
         rm = _rm()
         last_ts = _seed_vol_history(rm)
         cfg = _cfg()
-        # Vol at 0.69 — 98th percentile of [0.30..0.70] uniform distribution
+        # Vol at 0.69, 98th percentile of [0.30..0.70] uniform distribution
         regime = rm.detect_regime(
             "BTC-PERP", 50000.0, _vol(realized_vol=0.69, atr=500.0),
             moving_avg=50000.0, last_breakout_ms=None,
@@ -280,14 +280,14 @@ class TestRegimeDetection:
 
 
 # ---------------------------------------------------------------------------
-# TestVolHistoryContinuity — gap-aware sufficiency + persistence reload
+# TestVolHistoryContinuity, gap-aware sufficiency + persistence reload
 # (project decision: vol history persistence, 5-minute continuity gap)
 # ---------------------------------------------------------------------------
 
 class TestVolHistoryContinuity:
     def test_small_gap_stays_continuous(self):
         """A gap under the 5-minute threshold (e.g. an ordinary restart)
-        doesn't reset sufficiency — old and new samples count as one run."""
+        doesn't reset sufficiency, old and new samples count as one run."""
         rm = _rm()
         span_48h = 48 * 60 * 60 * 1000
         history = _dense_span(span_48h, 0.50)
@@ -301,7 +301,7 @@ class TestVolHistoryContinuity:
 
     def test_large_gap_breaks_continuity(self):
         """A gap over the 5-minute threshold (a real outage) means only the
-        trailing run counts — pre-gap history no longer satisfies the 48h
+        trailing run counts, pre-gap history no longer satisfies the 48h
         minimum even though it's technically still in `_vol_history`."""
         rm = _rm()
         span_48h = 48 * 60 * 60 * 1000
@@ -328,12 +328,12 @@ class TestVolHistoryContinuity:
 
     def test_load_vol_history_trims_to_7d_relative_to_now(self):
         """A long-dormant DB may hold samples individually close together
-        but collectively stale relative to actual now — trim relative to
+        but collectively stale relative to actual now, trim relative to
         now_ms, not the last-persisted timestamp."""
         rm = _rm()
         span_48h = 48 * 60 * 60 * 1000
         samples = _dense_span(span_48h, 0.50, start_ms=0)
-        # "Now" is 10 days after the persisted data — well past the 7d trim.
+        # "Now" is 10 days after the persisted data, well past the 7d trim.
         now_ms = samples[-1][0] + 10 * 24 * 60 * 60 * 1000
 
         rm.load_vol_history("BTC-PERP", samples, now_ms)
@@ -431,7 +431,7 @@ class TestBreakoutDetection:
         assert result.details["type"] == "vol_spike"
         assert "BTC-PERP" in rm._vol_recovery_start
 
-        # Vol now back below pause — _check_volatility must enforce recovery,
+        # Vol now back below pause, _check_volatility must enforce recovery,
         # not resume immediately.
         result2 = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.05), cfg)
         assert result2 is not None
@@ -469,7 +469,7 @@ class TestVolatilityCircuitBreakers:
 
     def test_no_kill_on_cold_start_single_sample(self):
         """A fresh bot's first-ever vol observation is trivially its own
-        100th percentile — must not trip the kill switch (design doc 6.4
+        100th percentile, must not trip the kill switch (design doc 6.4
         defines these thresholds as percentiles of trailing 7d vol, which is
         meaningless with <48h of history; same bootstrap window already used
         by detect_regime)."""
@@ -488,7 +488,7 @@ class TestVolatilityCircuitBreakers:
 
     def test_kill_fires_once_bootstrap_window_met(self):
         """Sanity check: the bootstrap gate only suppresses the check while
-        history is thin — once 48h of history exists, kill still fires."""
+        history is thin, once 48h of history exists, kill still fires."""
         rm = _rm()
         _seed_vol_history(rm, n=50, vol_low=0.30, vol_high=0.70,
                            start_ms=0)  # spans a full 7d by default
@@ -507,7 +507,7 @@ class TestVolatilityCircuitBreakers:
         assert result1 is not None
         assert result1.action == RiskAction.PAUSE_GRID
 
-        # Vol drops below pause — recovery timer starts, grid stays paused
+        # Vol drops below pause, recovery timer starts, grid stays paused
         result2 = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.40), cfg)
         assert result2 is not None
         assert result2.action == RiskAction.PAUSE_GRID
@@ -795,7 +795,7 @@ class TestPortfolioDelta:
 
     def test_same_side_positions_sum_and_breach(self):
         rm = _rm()
-        # Both long — USD values add
+        # Both long, USD values add
         positions = {
             "BTC-PERP": _pos(size=0.5, avg_entry=50000.0),  # $25,000
             "ETH-PERP": Position(
@@ -994,7 +994,7 @@ class TestEvaluateMethod:
     def test_priority_ordering(self):
         """drawdown > errors > breakout > vol > funding > inventory > momentum"""
         rm = _rm()
-        # Don't seed vol history — avoids vol recovery timer interference.
+        # Don't seed vol history, avoids vol recovery timer interference.
         # Vol checks return None when no percentile is available, which is fine
         # since we're testing funding vs inventory priority here.
 
@@ -1006,7 +1006,7 @@ class TestEvaluateMethod:
         result = rm.evaluate(state)
         assert result.action == RiskAction.SKEW_INVENTORY
 
-        # Now add funding concern — it's higher priority
+        # Now add funding concern, it's higher priority
         state2 = _state(
             position=_pos(size=0.6),
             funding_rate=0.50,

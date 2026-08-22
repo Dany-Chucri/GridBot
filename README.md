@@ -4,11 +4,11 @@ Autonomous grid trading bot for perpetual futures (BTC-PERP, ETH-PERP). Harvests
 
 ## How It Works
 
-The bot places a symmetric grid of Post-Only (maker) limit orders above and below an anchored mid-price. When price oscillates, buy orders fill on dips and sell orders fill on rallies — each round trip earns the grid spread minus fees. When price breaks out of range, a layered risk system suspends trading, flattens the position if necessary, and waits for regime to recover.
+The bot places a symmetric grid of Post-Only (maker) limit orders above and below an anchored mid-price. When price oscillates, buy orders fill on dips and sell orders fill on rallies, so that each round trip earns the grid spread minus fees. When price breaks out of range, a layered risk system suspends trading, flattens the position if necessary, and waits for regime to recover.
 
 Key behaviors:
 - **Regime-gated**: trading only runs in `RANGE` regime; pauses automatically on breakout/high-vol detection
-- **Batch-atomic order ops**: all cancel + place operations sent as a single batch request — no partial-grid states
+- **Batch-atomic order ops**: all cancel + place operations sent as a single batch request, no partial-grid states
 - **Exchange-authoritative**: all risk decisions use exchange-reported state, never local cache
 - **Crash-recoverable**: SQLite state store persists fills, grid spec, and position through restarts
 - **Server-side backstop**: one stop-loss order per asset always rests on the exchange as a dead-man's switch
@@ -20,7 +20,7 @@ Six modules orchestrated by a Supervisor event loop:
 | Module | Role |
 |---|---|
 | `market_data` | WebSocket price feed, fill events, volatility metrics |
-| `grid_engine` | Pure calculation — grid levels, spacing, anchor logic (no side effects) |
+| `grid_engine` | Pure calculation: grid levels, spacing, anchor logic (no side effects) |
 | `order_manager` | Batch order ops, reconciliation, flatten protocol, backstop stop-loss |
 | `risk_manager` | Inventory limits, breakout detection, vol circuit breaker, drawdown guards |
 | `pnl_monitor` | PnL tracking, funding accrual, cross-check against exchange |
@@ -32,7 +32,7 @@ See `docs/design.md` for the full design, and `docs/architecture.md` for the mod
 
 **Requirements:** Python 3.11+, an exchange account with a registered API/agent wallet.
 
-**1. Install dependencies.** Either the package (recommended — installs the `gridbot` CLI entry point):
+**1. Install dependencies.** Either the package (recommended, installs the `gridbot` CLI entry point):
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -54,11 +54,11 @@ cp config/gridbot.example.yaml config/gridbot.yaml
 ```
 
 Edit `config/gridbot.yaml`:
-- `wallet_address` — your **master** account address (not the agent wallet's own address).
-- `testnet: true` — keep this until you've completed the soak procedure below.
-- `alerting` — optional; leave both channels `enabled: false` for local dev.
+- `wallet_address`: your **master** account address (not the agent wallet's own address).
+- `testnet: true`: keep this until you've completed the soak procedure below.
+- `alerting`: optional; leave both channels `enabled: false` for local dev.
 
-**3. Provide the trading key as an environment variable — never in the YAML config.**
+**3. Provide the trading key as an environment variable, never in the YAML config.**
 
 ```bash
 cp deploy/gridbot.env.example .env
@@ -112,7 +112,7 @@ Unit test coverage: GridEngine 97%, RiskManager 96%, MarketData 72%, PnLMonitor 
 
 | Doc | Contents |
 |---|---|
-| `docs/design.md` | Authoritative design reference — architecture, risk model, parameters |
+| `docs/design.md` | Authoritative design reference, including architecture, risk model, parameters |
 | `docs/architecture.md` | Module dependency graph and data flow |
 | `docs/risk-model.md` | Risk model implementation detail |
 | `docs/operations.md` | Deployment, testnet soak, operational procedures |

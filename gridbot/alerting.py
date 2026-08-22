@@ -1,11 +1,11 @@
 """Alert delivery channels (design doc section 10.3).
 
 Supervisor's alert hook (`gridbot.supervisor.AlertCallback`) is transport-agnostic
-— it just calls `Callable[[severity, message], Awaitable[None]]`. This module
+- it just calls `Callable[[severity, message], Awaitable[None]]`. This module
 supplies the actual senders (Telegram, Discord) and wires them into a single
 callback from `AlertingConfig` plus secrets read from the environment.
 
-Secrets (bot token, webhook URL) are never read from the YAML config — only
+Secrets (bot token, webhook URL) are never read from the YAML config, only
 from environment variables, matching how `GRIDBOT_PRIVATE_KEY` is handled
 (see deploy/gridbot.env.example).
 """
@@ -52,7 +52,7 @@ def build_alert_callback(config: AlertingConfig) -> AlertCallback | None:
     """Build a combined alert callback from configured channels.
 
     Returns None if no channel is both enabled in config and has its secret
-    present in the environment — callers should treat that as "alerting not
+    present in the environment, callers should treat that as "alerting not
     configured" and log a warning, not silently proceed.
     """
     senders: list[AlertCallback] = []

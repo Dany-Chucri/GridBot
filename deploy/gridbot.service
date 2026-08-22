@@ -14,7 +14,7 @@ EnvironmentFile=/etc/gridbot/gridbot.env
 ExecStart=/opt/gridbot/.venv/bin/gridbot --config /etc/gridbot/gridbot.yaml --testnet --log-level INFO
 
 # Graceful shutdown: supervisor handles SIGTERM by cancelling orders and
-# persisting state (does NOT flatten — see design doc 4.5).
+# persisting state (does NOT flatten, see design doc 4.5).
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=60

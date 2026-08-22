@@ -1,4 +1,4 @@
-"""Tests for Supervisor — orchestration, cycle flow, risk routing, shutdown."""
+"""Tests for Supervisor, orchestration, cycle flow, risk routing, shutdown."""
 
 from __future__ import annotations
 
@@ -271,7 +271,7 @@ class TestRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_reloads_vol_history(self):
-        """A restart must not lose real, already-accumulated vol history —
+        """A restart must not lose real, already-accumulated vol history -
         it's loaded from the store and fed to RiskManager so a restart
         doesn't cost a fresh 48h bootstrap on top of genuine data."""
         samples = [(1000, 0.25), (2000, 0.30)]
@@ -316,7 +316,7 @@ class TestRecovery:
     async def test_routes_missed_fill_for_order_that_filled_while_down(self):
         """Design section 4.4 step 4: an order in local state but missing
         from the exchange snapshot must be checked against the fills
-        endpoint — if it filled while the bot was down, that fill must
+        endpoint, if it filled while the bot was down, that fill must
         still be routed to PnLMonitor/StateStore/flip logic, not dropped."""
         symbol = "BTC-PERP"
         vanished_order = OpenOrder(
@@ -360,7 +360,7 @@ class TestRecovery:
 
     @pytest.mark.asyncio
     async def test_no_fill_match_for_vanished_order_is_a_noop(self):
-        """A vanished order with no matching fill was simply cancelled —
+        """A vanished order with no matching fill was simply cancelled -
         no fill should be synthesized/routed."""
         symbol = "BTC-PERP"
         vanished_order = OpenOrder(
@@ -377,7 +377,7 @@ class TestRecovery:
 
         md = _mock_market_data()
         md.fetch_open_orders = AsyncMock(return_value=[])
-        md.fetch_fills = AsyncMock(return_value=[])  # nothing filled — was cancelled
+        md.fetch_fills = AsyncMock(return_value=[])  # nothing filled, was cancelled
 
         pm = _mock_pnl_monitor()
         sup = _make_supervisor(market_data=md, state_store=ss, pnl_monitor=pm)
@@ -441,7 +441,7 @@ class TestCycle:
     async def test_cycle_holds_last_equity_when_fetch_unavailable(self):
         """Regression (2026-08-18 false-KILL incident): a None equity read
         (e.g. mid-WS-reconnect, when MarketData._info is torn down) must not
-        overwrite state.account_equity with a fabricated $0 — that reads as
+        overwrite state.account_equity with a fabricated $0, that reads as
         a 100% drawdown to RiskManager and trips a false KILL. The cycle
         should hold the prior equity and skip recording an equity sample."""
         md = _mock_market_data()
@@ -463,7 +463,7 @@ class TestCycle:
     async def test_cycle_skips_pnl_crosscheck_when_exchange_pnl_unavailable(self):
         """Regression, same class as the equity fix above: a None PnL read
         (mid-WS-reconnect) must not be treated as a real $0 divergence signal
-        — skip the cross-check for this cycle and retry next cycle."""
+, skip the cross-check for this cycle and retry next cycle."""
         md = _mock_market_data()
         md.fetch_exchange_pnl = AsyncMock(return_value=None)
         pm = _mock_pnl_monitor()
@@ -502,7 +502,7 @@ class TestCycle:
     @pytest.mark.asyncio
     async def test_trend_regime_flattens_and_enters_cooldown(self):
         """Design section 8.1: TREND regime must cancel orders, flatten any
-        inventory, and enter cooldown — even when RiskManager.evaluate()
+        inventory, and enter cooldown, even when RiskManager.evaluate()
         itself returns CONTINUE (e.g. a slow grind away from the moving
         average that hasn't crossed the breakout-distance or vol-spike
         thresholds evaluate() checks independently)."""
@@ -525,13 +525,13 @@ class TestCycle:
         om.execute_flatten.assert_awaited()
         assert state.bot_state == BotState.COOLDOWN
         assert state.cooldown_until_ms is not None
-        # Not a breakout-type cause — shouldn't bump the breakout cooldown timer
+        # Not a breakout-type cause, shouldn't bump the breakout cooldown timer
         assert state.last_breakout_ms is None
 
     @pytest.mark.asyncio
     async def test_trend_regime_does_not_override_more_severe_action(self):
         """A CANCEL_AND_FLATTEN/KILL from evaluate() (e.g. drawdown) must not
-        be masked by the regime-TREND override — only CONTINUE is eligible."""
+        be masked by the regime-TREND override, only CONTINUE is eligible."""
         rm = _mock_risk_manager(action=RiskAction.KILL, reason="drawdown")
         rm.detect_regime = MagicMock(return_value=Regime.TREND)
         om = _mock_order_manager()
@@ -548,7 +548,7 @@ class TestCycle:
     @pytest.mark.asyncio
     async def test_unknown_regime_pauses_grid_without_cancelling_orders(self):
         """UNKNOWN (insufficient continuous vol history) must not fall
-        through to a real reconcile — GridEngine.compute_desired_orders
+        through to a real reconcile, GridEngine.compute_desired_orders
         returns [] for any non-RANGE regime, and diffing that against real
         resting orders would cancel all of them, including pending flips.
         UNKNOWN gets the same PAUSE_GRID treatment as HIGH_VOL: pause new
@@ -576,7 +576,7 @@ class TestCycle:
     @pytest.mark.asyncio
     async def test_unknown_regime_does_not_override_more_severe_action(self):
         """A CANCEL_AND_FLATTEN/KILL from evaluate() must not be masked by
-        the regime-UNKNOWN override — only CONTINUE is eligible."""
+        the regime-UNKNOWN override, only CONTINUE is eligible."""
         rm = _mock_risk_manager(action=RiskAction.KILL, reason="drawdown")
         rm.detect_regime = MagicMock(return_value=Regime.UNKNOWN)
         sup = _make_supervisor(risk_manager=rm)
@@ -646,7 +646,7 @@ class TestCycle:
 
 class TestRiskActionLogThrottling:
     """Risk actions log on entry, on a 10-minute heartbeat while unchanged,
-    and once on exit — not every cycle a persistent condition is re-evaluated
+    and once on exit, not every cycle a persistent condition is re-evaluated
     (regression: SUPPRESS_NEW_ENTRIES was logging every cycle_interval)."""
 
     def test_logs_once_on_entry_not_on_repeat(self, caplog):
@@ -681,7 +681,7 @@ class TestRiskActionLogThrottling:
         with caplog.at_level("INFO"):
             sup._log_risk_action(symbol, RiskAction.SUPPRESS_NEW_ENTRIES, "momentum", 0)
             sup._log_risk_action_cleared(symbol, 1_000)
-            sup._log_risk_action_cleared(symbol, 2_000)  # already clear — no repeat
+            sup._log_risk_action_cleared(symbol, 2_000)  # already clear, no repeat
 
         cleared_lines = [r.message for r in caplog.records if "cleared" in r.message]
         assert len(cleared_lines) == 1
@@ -813,7 +813,7 @@ class TestRiskActions:
             asset_cfg,
         )
         om.cancel_all_orders.assert_not_awaited()
-        # Skew must NOT skip reconcile — GridEngine needs to apply the skew.
+        # Skew must NOT skip reconcile, GridEngine needs to apply the skew.
         assert skip is False
 
 
@@ -1030,11 +1030,8 @@ class TestMaintenance:
         assert not Supervisor._looks_like_maintenance(ValueError("bad parse"))
 
     def test_classifies_gateway_errors_as_maintenance(self):
-        # CloudFront/nginx-fronted 502s and 504s during an exchange-side
-        # outage are the same "wait passively, don't count toward kill
-        # switch" class as 503/connection-refused (design.md line 109's
-        # "or similar patterns") — observed live on the testnet soak where
-        # a ~50min 502 Bad Gateway outage tripped max_consecutive_errors.
+        # 502/504 gateway errors are the same maintenance class as
+        # 503/connection-refused (design.md line 109's "or similar patterns").
         assert Supervisor._looks_like_maintenance(
             ServerError(502, "<html>502 Bad Gateway</html>")
         )
@@ -1045,15 +1042,10 @@ class TestMaintenance:
 
     @pytest.mark.asyncio
     async def test_desync_kill_routes_to_maintenance_on_gateway_reconnect_error(self):
-        # Observed live 2026-08-19T19:50: RiskManager's desync check
-        # (risk_manager.py's _check_errors_and_desync) fires KILL purely
-        # off elapsed WS-stale time — it never goes through an exchange
-        # call _looks_like_maintenance could classify, so a 502 storm that
-        # takes WS down trips KILL before the (already-fixed) consecutive-
-        # errors path ever gets a chance to reclassify it. The bot only
-        # survived that incident because cancel_all_orders' own call
-        # happened to also 502 and got caught by the outer handler — this
-        # test locks in the direct fix instead of relying on that coincidence.
+        # RiskManager's desync check fires KILL purely off elapsed WS-stale
+        # time, never through an exchange call _looks_like_maintenance could
+        # classify. A 502 storm that takes WS down would otherwise trip KILL
+        # before the consecutive-errors path gets a chance to reclassify it.
         rm = _mock_risk_manager(
             action=RiskAction.KILL, reason="desynced 30.5s >= 30s"
         )
@@ -1079,7 +1071,7 @@ class TestMaintenance:
     @pytest.mark.asyncio
     async def test_desync_kill_dispatches_normally_without_maintenance_error(self):
         # Same desync-KILL decision, but no maintenance-pattern reconnect
-        # error on record (e.g. a genuine local desync bug) — must still
+        # error on record (e.g. a genuine local desync bug), must still
         # kill the bot rather than silently swallowing every desync.
         rm = _mock_risk_manager()
         rm.evaluate = MagicMock(return_value=RiskDecision(
@@ -1137,7 +1129,7 @@ class TestDesync:
 class TestSkewReconcile:
     @pytest.mark.asyncio
     async def test_skew_inventory_still_runs_reconcile(self):
-        """SKEW_INVENTORY must not skip reconcile — GridEngine applies the skew."""
+        """SKEW_INVENTORY must not skip reconcile, GridEngine applies the skew."""
         rm = _mock_risk_manager(action=RiskAction.SKEW_INVENTORY)
         om = _mock_order_manager()
         sup = _make_supervisor(risk_manager=rm, order_manager=om)

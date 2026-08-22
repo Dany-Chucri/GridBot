@@ -51,7 +51,7 @@ async def test_report_builds_from_real_state_store(tmp_path: Path):
             is_maker=True, is_partial=False,
         )
     )
-    # A taker fill — should flag as non-maker
+    # A taker fill, should flag as non-maker
     await store.record_fill(
         Fill(
             fill_id="f3", order_id=3, client_order_id="c3",

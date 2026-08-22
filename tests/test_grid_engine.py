@@ -1,4 +1,4 @@
-"""Tests for GridEngine — pure calculation, no mocks needed."""
+"""Tests for GridEngine, pure calculation, no mocks needed."""
 
 import pytest
 
@@ -108,7 +108,7 @@ def _state(
 
 
 # ===========================================================================
-# 7.3 — Deterministic order IDs (existing tests kept + expanded)
+# 7.3, Deterministic order IDs (existing tests kept + expanded)
 # ===========================================================================
 
 class TestClientOrderId:
@@ -159,7 +159,7 @@ class TestConfigHash:
 
 
 # ===========================================================================
-# 1.1 — Grid spacing formula
+# 1.1, Grid spacing formula
 # ===========================================================================
 
 class TestGridSpacing:
@@ -237,7 +237,7 @@ class TestGridSpacing:
 
 
 # ===========================================================================
-# 1.2 — Order sizing
+# 1.2, Order sizing
 # ===========================================================================
 
 class TestOrderSizing:
@@ -304,7 +304,7 @@ class TestOrderSizing:
 
 
 # ===========================================================================
-# 1.3 — Inventory classification and skewing
+# 1.3, Inventory classification and skewing
 # ===========================================================================
 
 class TestInventoryClassification:
@@ -404,7 +404,7 @@ class TestInventorySkew:
             assert b.reduce_only is True
 
     def test_zero_position_hard_cap_no_removal(self):
-        """Zero position at hard cap (edge case) — no side to increase."""
+        """Zero position at hard cap (edge case), no side to increase."""
         eng = _engine()
         levels = self._make_levels()
         result = eng._apply_inventory_skew(levels, 0.0, InventoryZone.HARD_CAP)
@@ -427,7 +427,7 @@ class TestInventorySkew:
 
 
 # ===========================================================================
-# 1.4 — Core grid level computation
+# 1.4, Core grid level computation
 # ===========================================================================
 
 class TestCoreLevels:
@@ -524,7 +524,7 @@ class TestCoreLevels:
 
 
 # ===========================================================================
-# 1.5 — Expansion grid level computation
+# 1.5, Expansion grid level computation
 # ===========================================================================
 
 class TestExpansionLevels:
@@ -606,7 +606,7 @@ class TestExpansionLevels:
 
 
 # ===========================================================================
-# 1.6 — Staggered placement
+# 1.6, Staggered placement
 # ===========================================================================
 
 class TestStaggeredPlacement:
@@ -659,7 +659,7 @@ class TestStaggeredPlacement:
 
 
 # ===========================================================================
-# 1.7 — Anchor management
+# 1.7, Anchor management
 # ===========================================================================
 
 class TestAnchorManagement:
@@ -716,7 +716,7 @@ class TestAnchorManagement:
 
 
 # ===========================================================================
-# 1.8 — Pending flips
+# 1.8, Pending flips
 # ===========================================================================
 
 class TestPendingFlips:
@@ -783,7 +783,7 @@ class TestPendingFlips:
 
 
 # ===========================================================================
-# 1.9 — Main entry point: compute_desired_orders
+# 1.9, Main entry point: compute_desired_orders
 # ===========================================================================
 
 class TestComputeDesiredOrders:

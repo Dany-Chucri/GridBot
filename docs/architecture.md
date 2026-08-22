@@ -17,7 +17,7 @@ Supervisor (orchestrator)
 **Hard rules:**
 - `GridEngine` has zero side effects. It receives state, returns desired orders.
 - `OrderManager` is the sole gateway to exchange order operations.
-- `RiskManager` never places or cancels orders — it returns a `RiskDecision` that the `Supervisor` acts on.
+- `RiskManager` never places or cancels orders. It returns a `RiskDecision` that the `Supervisor` acts on.
 - `MarketData` owns the WS connection and provides prices/fills to other modules.
 
 ## Data Flow Per Cycle
@@ -37,7 +37,7 @@ PnLMonitor.crosscheck()      →  validate local vs exchange PnL
 ## Concurrency Model
 
 - Single async event loop (`asyncio`).
-- WS messages and REST reconciliation update the same `AssetState` — serialized via `asyncio.Lock` to prevent races ([design.md](design.md) section 4.3).
+- WS messages and REST reconciliation update the same `AssetState`, serialized via `asyncio.Lock` to prevent races ([design.md](design.md) section 4.3).
 - Each asset runs its cycle independently within the same loop.
 
 ## State Ownership
@@ -62,5 +62,5 @@ PnLMonitor.crosscheck()      →  validate local vs exchange PnL
 | `gridbot/risk_manager.py` | RiskManager | 6.1-6.6, 8.1-8.3, 9.2 |
 | `gridbot/pnl_monitor.py` | PnLMonitor | 10.6 |
 | `gridbot/supervisor.py` | Supervisor | 3.3, 4.4-4.5, 10.2-10.4 |
-| `gridbot/types.py` | Shared types | — |
+| `gridbot/types.py` | Shared types |, |
 | `gridbot/config.py` | Configuration | 11.1-11.3 |

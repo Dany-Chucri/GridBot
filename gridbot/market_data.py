@@ -1,4 +1,4 @@
-"""MarketData — real-time market view via WS + REST fallback.
+"""MarketData, real-time market view via WS + REST fallback.
 
 Responsibilities (design doc section 3.2):
 - Subscribe to WS mid/mark price and trade streams
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Hyperliquid fee rates (standard tier). Maker rate matches design.md
 # section 5.4's conservative maker_fee estimate (~0.2 bps) used in the grid
-# step floor formula — was previously 10x too high (0.0002 = 2 bps).
+# step floor formula, was previously 10x too high (0.0002 = 2 bps).
 _MAKER_FEE_RATE = 0.00002  # 0.002% = 0.2 bps
 _TAKER_FEE_RATE = 0.0005   # 0.05% = 5 bps
 
@@ -168,29 +168,29 @@ class MarketData:
         for ac in self._config.assets:
             coin = self._to_coin(ac.symbol)
 
-            # l2Book — primary price source (bid/ask/mid)
+            # l2Book, primary price source (bid/ask/mid)
             sub_id = self._info.subscribe(
                 {"type": "l2Book", "coin": coin}, self._on_l2_book
             )
             self._subscriptions.append(({"type": "l2Book", "coin": coin}, sub_id))
 
-            # trades — for vol computation
+            # trades, for vol computation
             sub_id = self._info.subscribe(
                 {"type": "trades", "coin": coin}, self._on_trades
             )
             self._subscriptions.append(({"type": "trades", "coin": coin}, sub_id))
 
-            # activeAssetCtx — mark price, funding rate
+            # activeAssetCtx, mark price, funding rate
             sub_id = self._info.subscribe(
                 {"type": "activeAssetCtx", "coin": coin}, self._on_asset_ctx
             )
             self._subscriptions.append(({"type": "activeAssetCtx", "coin": coin}, sub_id))
 
-        # allMids — fallback mid prices
+        # allMids, fallback mid prices
         sub_id = self._info.subscribe({"type": "allMids"}, self._on_all_mids)
         self._subscriptions.append(({"type": "allMids"}, sub_id))
 
-        # orderUpdates — fill detection (requires wallet address)
+        # orderUpdates, fill detection (requires wallet address)
         if self._config.wallet_address:
             sub_id = self._info.subscribe(
                 {"type": "orderUpdates", "user": self._config.wallet_address},
@@ -201,7 +201,7 @@ class MarketData:
                 sub_id,
             ))
         else:
-            logger.warning("No wallet_address configured — orderUpdates subscription skipped")
+            logger.warning("No wallet_address configured, orderUpdates subscription skipped")
 
         self._ws_connected = True
         self._last_ws_message_ms = int(time.time() * 1000)
@@ -441,7 +441,7 @@ class MarketData:
                 current["volume"] += size
 
     async def _handle_order_update(self, raw: dict) -> Fill | None:
-        """Process a WS orderUpdate — the PRIMARY fill detection path.
+        """Process a WS orderUpdate, the PRIMARY fill detection path.
 
         Returns a Fill on full OR partial fill, None otherwise.
         Partial fills carry ``is_partial=True`` so the Supervisor records
@@ -543,7 +543,7 @@ class MarketData:
     # ------------------------------------------------------------------
 
     async def fetch_open_orders(self, symbol: str) -> list[OpenOrder]:
-        """REST fetch of current open orders — backup consistency check."""
+        """REST fetch of current open orders, backup consistency check."""
         if not self._info or not self._config.wallet_address:
             return []
 
@@ -579,7 +579,7 @@ class MarketData:
         """REST fetch of fills for `symbol` since `since_ms` (epoch ms).
 
         Used by restart recovery (section 4.4) to classify orders that were
-        in local state but are missing from the exchange snapshot — the
+        in local state but are missing from the exchange snapshot, the
         local state was stale (bot was down) and the order may have filled
         rather than merely been cancelled.
         """
@@ -624,7 +624,7 @@ class MarketData:
         return result
 
     async def fetch_position(self, symbol: str) -> Position | None:
-        """REST fetch of current position — backup consistency check."""
+        """REST fetch of current position, backup consistency check."""
         if not self._info or not self._config.wallet_address:
             return None
 
@@ -663,7 +663,7 @@ class MarketData:
 
         Uses exchange-reported marginSummary.accountValue (the source of
         truth for drawdown checks). Returns None (not 0.0) when the read is
-        unavailable — e.g. mid-WS-reconnect, when self._info is torn down —
+        unavailable, e.g. mid-WS-reconnect, when self._info is torn down -
         so callers can hold the last-known equity instead of feeding a
         fabricated $0 into the drawdown kill switch (a real read of 0.0 is
         still returned as 0.0; only an inability to read is None).
@@ -687,8 +687,8 @@ class MarketData:
     async def fetch_exchange_pnl(self, symbol: str) -> float | None:
         """REST fetch of exchange-reported unrealized PnL (section 10.6).
 
-        Returns None (not 0.0) when the read is unavailable — e.g. mid-WS-
-        reconnect, when self._info is torn down — so callers can skip that
+        Returns None (not 0.0) when the read is unavailable, e.g. mid-WS-
+        reconnect, when self._info is torn down, so callers can skip that
         cycle's cross-check instead of treating a fabricated $0 as a real
         divergence signal. A real read with no matching position is still a
         genuine 0.0 (zero position, zero unrealized PnL).
@@ -862,7 +862,7 @@ class MarketData:
     @staticmethod
     def _compute_ema(candles: deque[dict], period: int) -> float:
         """EMA of 1-minute candle closes. Returns 0.0 until `period`
-        candles exist — callers treat 0.0 as "not yet available" (mirrors
+        candles exist, callers treat 0.0 as "not yet available" (mirrors
         how ATR's ready-check works), not a real average price."""
         if len(candles) < period:
             return 0.0

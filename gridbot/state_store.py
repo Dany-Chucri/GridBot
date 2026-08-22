@@ -1,4 +1,4 @@
-"""StateStore — persistent storage via SQLite.
+"""StateStore, persistent storage via SQLite.
 
 Responsibilities (design doc section 3.2):
 - Store bot config version, grid spec, regime, positions, order map, fills
@@ -134,8 +134,8 @@ CREATE TABLE IF NOT EXISTS heartbeat (
 CREATE INDEX IF NOT EXISTS idx_fills_symbol_ts ON fills(symbol, timestamp_ms);
 """
 
-# SQL for schema v2 — vol history persistence (see memory: vol history
-# persistence decision). Raw observed samples only, no interpolation.
+# SQL for schema v2, vol history persistence. Raw observed samples only,
+# no interpolation of gaps.
 _SCHEMA_V2 = """
 CREATE TABLE IF NOT EXISTS vol_history (
     symbol TEXT NOT NULL,
@@ -168,11 +168,11 @@ def _serialize_asset_state(state: AssetState) -> str:
         pass  # all numeric, asdict handles it
     if state.grid_config is not None:
         pass  # all numeric/str, asdict handles it
-    # Convert OpenOrder list — side enums
+    # Convert OpenOrder list, side enums
     d["open_orders"] = [
         {**asdict(o), "side": o.side.value} for o in state.open_orders
     ]
-    # Convert PendingFlip list — side enums
+    # Convert PendingFlip list, side enums
     d["pending_flips"] = [
         {**asdict(f), "side": f.side.value} for f in state.pending_flips
     ]
@@ -266,7 +266,7 @@ class StateStore:
         exists = await cursor.fetchone()
 
         if not exists:
-            # Fresh database — apply the full current schema directly
+            # Fresh database, apply the full current schema directly
             # (all versions' CREATE TABLE scripts, not just v1) so a new
             # install doesn't need to immediately re-run migrations it
             # could have started with.
@@ -303,7 +303,7 @@ class StateStore:
                 logger.info("Applied migration v%d -> v%d", version, version + 1)
 
     async def _migrate_v1_to_v2(self) -> None:
-        """Add vol_history table (see memory: vol history persistence)."""
+        """Add vol_history table."""
         await self._conn.executescript(_SCHEMA_V2)
 
     async def close(self) -> None:
@@ -593,7 +593,7 @@ class StateStore:
         return row["timestamp_ms"]
 
     # ------------------------------------------------------------------
-    # Vol history persistence (see memory: vol history persistence)
+    # Vol history persistence
     # ------------------------------------------------------------------
 
     async def append_vol_sample(
@@ -601,7 +601,7 @@ class StateStore:
     ) -> None:
         """Persist one vol observation and prune anything older than 7d.
 
-        Raw observed samples only — no interpolation of gaps. RiskManager
+        Raw observed samples only, no interpolation of gaps. RiskManager
         decides on load whether a gap makes the pre-gap samples unusable.
         """
         await self._conn.execute(

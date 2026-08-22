@@ -1,4 +1,4 @@
-"""Tests for StateStore — SQLite persistence layer."""
+"""Tests for StateStore, SQLite persistence layer."""
 
 import asyncio
 from pathlib import Path
@@ -131,7 +131,7 @@ def _asset_state(symbol: str = "BTC-PERP") -> AssetState:
 
 
 # ---------------------------------------------------------------------------
-# 3.1 Initialize — tables and WAL
+# 3.1 Initialize, tables and WAL
 # ---------------------------------------------------------------------------
 
 class TestInitialize:
@@ -298,7 +298,7 @@ class TestPosition:
 
 
 # ---------------------------------------------------------------------------
-# 3.2 Open orders — bulk replace
+# 3.2 Open orders, bulk replace
 # ---------------------------------------------------------------------------
 
 class TestOpenOrders:
@@ -365,7 +365,7 @@ class TestOpenOrders:
 
 
 # ---------------------------------------------------------------------------
-# 3.2 Fills — append-only
+# 3.2 Fills, append-only
 # ---------------------------------------------------------------------------
 
 class TestFills:
@@ -459,7 +459,7 @@ class TestRegime:
 
 
 # ---------------------------------------------------------------------------
-# 3.2 Pending flips — bulk replace
+# 3.2 Pending flips, bulk replace
 # ---------------------------------------------------------------------------
 
 class TestPendingFlips:
@@ -622,7 +622,7 @@ class TestHeartbeat:
 
 
 # ---------------------------------------------------------------------------
-# Vol history persistence (see memory: vol history persistence)
+# Vol history persistence
 # ---------------------------------------------------------------------------
 
 class TestVolHistory:
@@ -648,7 +648,7 @@ class TestVolHistory:
     async def test_prunes_samples_older_than_7d(self, store: StateStore):
         seven_d_ms = 7 * 24 * 60 * 60 * 1000
         await store.append_vol_sample("BTC-PERP", 0, 0.25)
-        # A later sample whose 7d cutoff is past the first one — the first
+        # A later sample whose 7d cutoff is past the first one, the first
         # should be pruned rather than accumulate forever.
         await store.append_vol_sample("BTC-PERP", seven_d_ms + 1, 0.30)
         result = await store.load_vol_history("BTC-PERP")

@@ -1,4 +1,4 @@
-"""Supervisor — orchestration and lifecycle.
+"""Supervisor: orchestration and lifecycle.
 
 Responsibilities (design doc section 3.2):
 - Run the main event loop
@@ -58,7 +58,7 @@ _RISK_ACTION_HEARTBEAT_MS = 10 * 60 * 1000
 
 
 class Supervisor:
-    """Main orchestrator — coordinates all modules through the event loop."""
+    """Main orchestrator, coordinates all modules through the event loop."""
 
     def __init__(
         self,
@@ -106,7 +106,7 @@ class Supervisor:
 
         # Risk-action log throttling: log on entry (action changes), on a
         # heartbeat cadence while unchanged, and once on exit (back to
-        # CONTINUE) — not on every cycle a persistent condition is evaluated.
+        # CONTINUE), not on every cycle a persistent condition is evaluated.
         self._last_risk_action: dict[str, RiskAction | None] = {
             ac.symbol: None for ac in config.assets
         }
@@ -129,7 +129,7 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
-        """Main entry point — initialize, recover, and run the event loop."""
+        """Main entry point: initialize, recover, and run the event loop."""
         try:
             await self._initialize()
             await self._recover_state()
@@ -206,7 +206,7 @@ class Supervisor:
             # Restore vol history so a restart doesn't cost a fresh 48h
             # bootstrap on top of real, already-accumulated data. Gap-aware
             # sufficiency (_continuous_run) decides whether it's still
-            # usable — a short gap (ordinary restart) is transparent, a
+            # usable, a short gap (ordinary restart) is transparent, a
             # long one (real outage) correctly forces a fresh bootstrap.
             vol_samples = await self._state_store.load_vol_history(symbol)
             self._risk_manager.load_vol_history(
@@ -217,7 +217,7 @@ class Supervisor:
             exchange_orders = await self._market_data.fetch_open_orders(symbol)
             exchange_position = await self._market_data.fetch_position(symbol)
 
-            # 3. Reconcile — adopt exchange as truth, cancel orphans
+            # 3. Reconcile, adopt exchange as truth, cancel orphans
             persisted_cloids = {
                 o.client_order_id for o in state.open_orders if o.client_order_id
             }
@@ -237,7 +237,7 @@ class Supervisor:
             # must be checked against the fills endpoint (section 4.4 step
             # 4): they may have filled while the bot was down, not merely
             # been cancelled. Without this, a fill during downtime is
-            # silently dropped — no flip is ever placed for that level and
+            # silently dropped, no flip is ever placed for that level and
             # local PnL under-counts it.
             exchange_cloids = {o.client_order_id for o in exchange_orders if o.client_order_id}
             vanished = [
@@ -258,7 +258,7 @@ class Supervisor:
                     if matched is None:
                         continue
                     logger.warning(
-                        "Order %d for %s filled while bot was down — routing missed fill",
+                        "Order %d for %s filled while bot was down, routing missed fill",
                         order.order_id, symbol,
                     )
                     missed_fill = Fill(
@@ -300,7 +300,7 @@ class Supervisor:
     async def _preflight_checks(self) -> None:
         """Run pre-flight validation (section 6.1).
 
-        Hard gate — no operator override allowed.
+        Hard gate, no operator override allowed.
         """
         logger.info("Running pre-flight checks")
         equity = await self._market_data.fetch_account_equity()
@@ -318,9 +318,9 @@ class Supervisor:
             for sym, vs in all_violations:
                 for v in vs:
                     logger.error("Pre-flight violation [%s]: %s", sym, v)
-            raise RuntimeError("Pre-flight checks failed — refusing to start")
+            raise RuntimeError("Pre-flight checks failed, refusing to start")
 
-        # All clear — transition assets to RUNNING
+        # All clear, transition assets to RUNNING
         for ac in self._config.assets:
             st = self._asset_states[ac.symbol]
             if st.bot_state not in (BotState.DEAD,):
@@ -332,14 +332,14 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     async def _main_loop(self) -> None:
-        """Core event loop — runs until shutdown or all assets DEAD."""
+        """Core event loop, runs until shutdown or all assets DEAD."""
         logger.info("Entering main loop")
         while not self._shutdown_requested:
             if all(
                 self._asset_states[ac.symbol].bot_state == BotState.DEAD
                 for ac in self._config.assets
             ):
-                logger.error("All assets DEAD — exiting main loop")
+                logger.error("All assets DEAD, exiting main loop")
                 break
 
             for asset_cfg in self._config.assets:
@@ -378,14 +378,14 @@ class Supervisor:
             await self._state_store.update_heartbeat(symbol, now_ms)
             if state.cooldown_until_ms is not None and now_ms < state.cooldown_until_ms:
                 return
-            logger.info("Cooldown expired for %s — resuming", symbol)
+            logger.info("Cooldown expired for %s, resuming", symbol)
             state.bot_state = BotState.RUNNING
             state.cooldown_until_ms = None
 
         if state.bot_state == BotState.MAINTENANCE:
             # If WS is healthy again, reconcile via REST and resume.
             if self._market_data.is_ws_connected() and not self._ws_is_stale(now_ms):
-                logger.info("MAINTENANCE exit for %s — reconciling via REST", symbol)
+                logger.info("MAINTENANCE exit for %s, reconciling via REST", symbol)
                 await self._rest_reconciliation(symbol)
                 state.bot_state = BotState.RUNNING
                 await self._state_store.update_heartbeat(symbol, now_ms)
@@ -396,7 +396,7 @@ class Supervisor:
         self._update_desync(now_ms)
 
         # 1. Exchange-reported equity (source of truth). A None read means the
-        # fetch was unavailable (e.g. mid-WS-reconnect) — hold the prior
+        # fetch was unavailable (e.g. mid-WS-reconnect), hold the prior
         # cycle's equity rather than recording a fabricated $0 that would
         # read as a 100% drawdown to RiskManager.
         account_equity = await self._market_data.fetch_account_equity()
@@ -414,7 +414,7 @@ class Supervisor:
 
         # Feed vol history for percentile calcs (in-memory for this cycle's
         # decisions, persisted so a restart doesn't lose real accumulated
-        # history — see RiskManager._continuous_run).
+        # history, see RiskManager._continuous_run).
         self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
         await self._state_store.append_vol_sample(symbol, now_ms, vol_metrics.realized_vol)
 
@@ -443,16 +443,16 @@ class Supervisor:
             self._last_regime[symbol] = state.regime
         decision = self._risk_manager.evaluate(state)
 
-        # RiskManager.evaluate() has no knowledge of regime — its breakout/
+        # RiskManager.evaluate() has no knowledge of regime, its breakout/
         # vol checks are independent triggers that happen to often coincide
         # with TREND/HIGH_VOL regime reads, but not always (e.g. a slow
         # grind away from the moving average trips TREND without crossing
         # the breakout-distance or vol-spike thresholds). Design section 8.1
         # requires TREND to cancel orders, flatten any inventory, and enter
-        # cooldown — not just stop quoting. HIGH_VOL is already covered:
+        # cooldown, not just stop quoting. HIGH_VOL is already covered:
         # its regime threshold matches _check_volatility's vol_pause_percentile,
         # which independently returns PAUSE_GRID (existing orders remain
-        # resting, per section 6.4 — GridEngine's empty desired-set behavior
+        # resting, per section 6.4, GridEngine's empty desired-set behavior
         # for non-RANGE regimes never even runs in that case).
         if decision.action == RiskAction.CONTINUE and state.regime == Regime.TREND:
             decision = RiskDecision(
@@ -461,12 +461,12 @@ class Supervisor:
                 details={"type": "regime_trend"},
             )
 
-        # UNKNOWN (insufficient continuous vol history — cold start, or a
+        # UNKNOWN (insufficient continuous vol history, cold start, or a
         # restart after a gap wide enough that _continuous_run resets) gets
         # the same treatment as HIGH_VOL: pause new placement, leave
         # existing orders resting. Breakout, backstop, momentum filter, and
         # drawdown checks are independent of vol history and stay fully
-        # live regardless — only the percentile-based regime call and the
+        # live regardless, only the percentile-based regime call and the
         # vol_pause/vol_kill circuit breaker are actually blind here.
         if decision.action == RiskAction.CONTINUE and state.regime == Regime.UNKNOWN:
             decision = RiskDecision(
@@ -479,7 +479,7 @@ class Supervisor:
         # individual per-asset caps can't catch: both BTC and ETH pass their
         # own soft-cap checks individually but their correlated same-side
         # exposure exceeds the stricter combined budget. Only overrides
-        # CONTINUE — if this asset's own checks already flagged something
+        # CONTINUE, if this asset's own checks already flagged something
         # more specific (skew, pause, flatten), that takes precedence.
         if decision.action == RiskAction.CONTINUE and self._portfolio_delta_breached(state.account_equity):
             decision = RiskDecision(
@@ -493,16 +493,11 @@ class Supervisor:
             and details.get("type") == "portfolio_delta"
         )
 
-        # The desync KILL check (RiskManager._check_errors_and_desync) fires
-        # on elapsed WS-stale time alone, with no maintenance awareness —
-        # unlike the consecutive-errors KILL path, it never routes through
-        # an exchange call that _looks_like_maintenance could classify. If
-        # the WS is stale because the last reconnect hit a maintenance-
-        # pattern error (502/503/504/connection-refused), treat this like
-        # any other maintenance-caused disruption instead of killing the
-        # bot (CLAUDE.md: "don't count maintenance errors toward the kill
-        # switch" — observed live 2026-08-19T19:50, where this only didn't
-        # kill the bot because cancel_all_orders happened to also 502).
+        # The desync KILL check fires on elapsed WS-stale time alone, with no
+        # maintenance awareness. If the WS went stale because the last
+        # reconnect hit a maintenance-pattern error (502/503/504/connection-
+        # refused), treat it as a maintenance disruption rather than killing
+        # the bot.
         if (
             decision.action == RiskAction.KILL
             and "desynced_seconds" in details
@@ -511,7 +506,7 @@ class Supervisor:
         ):
             logger.warning(
                 "Desync KILL for %s traces to a maintenance-pattern reconnect "
-                "failure — entering MAINTENANCE instead: %s",
+                "failure, entering MAINTENANCE instead: %s",
                 symbol, self._market_data.get_last_reconnect_error(),
             )
             await self._handle_maintenance()
@@ -582,7 +577,7 @@ class Supervisor:
         )
         if now_ms - self._last_crosscheck_ms[symbol] >= crosscheck_interval_ms:
             exchange_pnl = await self._market_data.fetch_exchange_pnl(symbol)
-            # None means the read was unavailable (e.g. mid-WS-reconnect) —
+            # None means the read was unavailable (e.g. mid-WS-reconnect) -
             # skip this cycle's cross-check rather than treating a fabricated
             # $0 as a real divergence; retry next cycle (timer not advanced).
             if exchange_pnl is not None:
@@ -603,7 +598,7 @@ class Supervisor:
             self._last_rest_reconcile_ms[symbol] = now_ms
 
         # 10. Cycle metrics (DEBUG: this fires every cycle_interval_seconds per
-        # symbol — design doc 10.2's minimum-log list is discrete events
+        # symbol, design doc 10.2's minimum-log list is discrete events
         # (regime transitions, order batches, fills, risk events, reconcile
         # discrepancies), which already log at INFO/WARNING elsewhere; this is
         # a heartbeat for troubleshooting, not one of those events)
@@ -648,7 +643,7 @@ class Supervisor:
     # ------------------------------------------------------------------
 
     async def _shutdown(self) -> None:
-        """Cancel orders, persist state, disconnect — do NOT flatten."""
+        """Cancel orders, persist state, disconnect, do NOT flatten."""
         logger.info("Shutdown sequence starting")
 
         # 1. Mark state
@@ -656,7 +651,7 @@ class Supervisor:
             if state.bot_state != BotState.DEAD:
                 state.bot_state = BotState.SHUTTING_DOWN
 
-        # 2. Batch cancel per asset (no flatten — section 4.5)
+        # 2. Batch cancel per asset (no flatten, section 4.5)
         for asset_cfg in self._config.assets:
             try:
                 await self._order_manager.cancel_all_orders(asset_cfg.symbol)
@@ -705,7 +700,7 @@ class Supervisor:
         self, symbol: str, action: RiskAction, reason: str, now_ms: int,
     ) -> None:
         """Log a risk action on entry (action changed) or on a heartbeat
-        cadence while it persists unchanged — not on every cycle it's
+        cadence while it persists unchanged, not on every cycle it's
         re-evaluated as still active."""
         if action != self._last_risk_action[symbol]:
             logger.info("Risk action %s for %s: %s", action.name, symbol, reason)
@@ -724,7 +719,7 @@ class Supervisor:
         """Log once when a persisted risk action clears back to CONTINUE."""
         prior = self._last_risk_action[symbol]
         if prior is not None:
-            logger.info("Risk action %s for %s cleared — resuming CONTINUE", prior.name, symbol)
+            logger.info("Risk action %s for %s cleared, resuming CONTINUE", prior.name, symbol)
             self._last_risk_action[symbol] = None
             self._risk_action_last_log_ms.pop(symbol, None)
 
@@ -739,7 +734,7 @@ class Supervisor:
         Returns True when the caller should skip grid reconciliation for this
         cycle (PAUSE_GRID / SUPPRESS_NEW_ENTRIES). Terminal actions
         (CANCEL_AND_FLATTEN / KILL) transition state and also return True.
-        SKEW_* / REDUCE_ONLY return False — GridEngine applies the skew
+        SKEW_* / REDUCE_ONLY return False, GridEngine applies the skew
         directly via state during the subsequent reconcile.
         """
         action = decision.action
@@ -768,7 +763,7 @@ class Supervisor:
                 await self._state_store.save_bot_state(symbol, state)
                 await self._run_flatten(symbol, asset_cfg)
 
-            # If flatten failed and we're now DEAD, keep DEAD sticky —
+            # If flatten failed and we're now DEAD, keep DEAD sticky -
             # do NOT overwrite with COOLDOWN.
             if state.bot_state == BotState.DEAD:
                 await self._state_store.save_bot_state(symbol, state)
@@ -826,14 +821,14 @@ class Supervisor:
             _get_position,
         )
         if not fully_flattened:
-            logger.error("Flatten incomplete for %s — entering DEAD", symbol)
+            logger.error("Flatten incomplete for %s, entering DEAD", symbol)
             state.bot_state = BotState.DEAD
             await self._send_alert("CRITICAL", f"Flatten residual for {symbol}")
         # Refresh position post-flatten
         state.position = await self._market_data.fetch_position(symbol)
 
     # ------------------------------------------------------------------
-    # REST reconciliation (section 4.3 — backup path)
+    # REST reconciliation (section 4.3, backup path)
     # ------------------------------------------------------------------
 
     async def _rest_reconciliation(self, symbol: str) -> None:
@@ -852,18 +847,18 @@ class Supervisor:
         rest_cloids = {o.client_order_id for o in rest_orders}
         if local_cloids != rest_cloids:
             logger.warning(
-                "REST/WS order divergence for %s: local=%d rest=%d — adopting exchange",
+                "REST/WS order divergence for %s: local=%d rest=%d, adopting exchange",
                 symbol, len(local_cloids), len(rest_cloids),
             )
             # Design section 10.3: "Reconcile discrepancy detected" is a
-            # High-severity alert, not just a log line — the operator needs
+            # High-severity alert, not just a log line, the operator needs
             # to know WS silently dropped an event even though REST self-healed
             # it. This module maps design's High tier to WARNING, matching
             # the existing convention used for breakout-flatten alerts below.
             await self._send_alert(
                 "WARNING",
                 f"REST/WS order divergence for {symbol}: local={len(local_cloids)} "
-                f"rest={len(rest_cloids)} — adopted exchange state",
+                f"rest={len(rest_cloids)}, adopted exchange state",
             )
             state.open_orders = rest_orders
 
@@ -872,13 +867,13 @@ class Supervisor:
         rest_size = rest_position.size if rest_position else 0.0
         if abs(local_size - rest_size) > 1e-9:
             logger.warning(
-                "REST/WS position divergence for %s: local=%.8f rest=%.8f — adopting exchange",
+                "REST/WS position divergence for %s: local=%.8f rest=%.8f, adopting exchange",
                 symbol, local_size, rest_size,
             )
             await self._send_alert(
                 "WARNING",
                 f"REST/WS position divergence for {symbol}: local={local_size:.8f} "
-                f"rest={rest_size:.8f} — adopted exchange state",
+                f"rest={rest_size:.8f}, adopted exchange state",
             )
         state.position = rest_position
 
@@ -907,7 +902,7 @@ class Supervisor:
         """Log total MAINTENANCE episode duration once every asset has exited.
 
         Assets can exit MAINTENANCE on different cycles, so this only fires
-        (and clears the entry timestamp) once none remain in that state —
+        (and clears the entry timestamp) once none remain in that state -
         otherwise the first asset to reconcile would log a partial duration.
         """
         if self._maintenance_entered_ms is None:
@@ -1028,10 +1023,9 @@ class Supervisor:
     def _looks_like_maintenance(exc: BaseException) -> bool:
         """Classify whether an exception is from exchange maintenance.
 
-        Covers the connection-refused / 503 cases called out in CLAUDE.md
-        ("Don't count maintenance errors toward the kill switch"). Matching
-        is deliberately conservative: type-based first, then substring on
-        the message for SDK-wrapped HTTP errors we can't type-check.
+        Matching is deliberately conservative: type-based first, then
+        substring on the message for SDK-wrapped HTTP errors that can't be
+        type-checked directly.
         """
         if isinstance(exc, (ConnectionError, TimeoutError)):
             return True

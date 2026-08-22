@@ -1,4 +1,4 @@
-"""Tests for MarketData — vol metrics, price handling, order updates, REST fetches."""
+"""Tests for MarketData, vol metrics, price handling, order updates, REST fetches."""
 
 import asyncio
 import math
@@ -176,7 +176,7 @@ class TestTradeHandling:
         # Minute 1
         await md._handle_trade("BTC-PERP", 100.0, 1.0, 60_000)
         await md._handle_trade("BTC-PERP", 110.0, 1.0, 90_000)
-        # Minute 2 — should finalize minute 1
+        # Minute 2, should finalize minute 1
         await md._handle_trade("BTC-PERP", 105.0, 1.0, 120_000)
 
         assert len(md._minute_candles["BTC-PERP"]) == 1
@@ -361,7 +361,7 @@ class TestATR:
 
 
 # ===========================================================================
-# 6b. Moving average (EMA — design doc section 8.2 signal 2, previously
+# 6b. Moving average (EMA, design doc section 8.2 signal 2, previously
 # unimplemented: state.moving_avg was declared but never assigned anywhere,
 # so the TREND-via-slow-grind regime signal could never fire)
 # ===========================================================================
@@ -369,7 +369,7 @@ class TestATR:
 class TestMovingAverage:
     def test_insufficient_candles_returns_zero(self, md: MarketData):
         """Callers (RiskManager.detect_regime) treat 0.0 as "not yet
-        available" and skip the signal — mirrors ATR's ready-check."""
+        available" and skip the signal, mirrors ATR's ready-check."""
         candles = [_make_candle(100, 105, 95, 100, ts=i * 60_000) for i in range(_EMA_PERIOD - 1)]
         _populate_candles(md, "BTC-PERP", candles)
         assert md.get_moving_average("BTC-PERP") == 0.0
@@ -384,7 +384,7 @@ class TestMovingAverage:
 
     def test_ema_damps_a_single_late_jump(self, md: MarketData):
         """A single late jump nudges the EMA toward it but doesn't chase it
-        all the way — one alpha-weighted step, not a level shift."""
+        all the way, one alpha-weighted step, not a level shift."""
         candles = [_make_candle(100, 100, 100, 100, ts=i * 60_000) for i in range(_EMA_PERIOD - 1)]
         candles.append(_make_candle(200, 200, 200, 200, ts=(_EMA_PERIOD - 1) * 60_000))
         _populate_candles(md, "BTC-PERP", candles)
@@ -596,7 +596,7 @@ class TestOrderUpdateHandling:
 
     @pytest.mark.asyncio
     async def test_fill_without_prior_tracking(self, md: MarketData):
-        """Fill arrives without a prior 'open' — uses origSz."""
+        """Fill arrives without a prior 'open', uses origSz."""
         fill = await md._handle_order_update(
             self._make_update(oid=99, status="filled", sz="0.0", orig_sz="3.0",
                               limit_px="40000.0", status_ts=500_000)
@@ -1146,7 +1146,7 @@ class TestRESTFetches:
     async def test_fetch_account_equity_none_when_info_missing(self, md: MarketData):
         """Regression (2026-08-18 false-KILL incident): an unavailable read
         (e.g. mid-WS-reconnect, self._info torn down) must return None, not
-        0.0 — 0.0 is indistinguishable from a real zero-equity read and feeds
+        0.0, 0.0 is indistinguishable from a real zero-equity read and feeds
         a false 100% drawdown into the kill switch."""
         assert md._info is None
         equity = await md.fetch_account_equity()
@@ -1168,7 +1168,7 @@ class TestRESTFetches:
 
     @pytest.mark.asyncio
     async def test_fetch_exchange_pnl_none_on_error(self, md_with_info: MarketData):
-        """Regression: an unavailable read must return None, not 0.0 — 0.0 is
+        """Regression: an unavailable read must return None, not 0.0, 0.0 is
         indistinguishable from a real zero-PnL read and would feed a
         fabricated 'divergence' into the PnL cross-check."""
         md = md_with_info
@@ -1315,7 +1315,7 @@ class TestConfigChanges:
     def test_ws_reconnect_threshold_below_kill_threshold(self):
         """Regression guard: the WS reconnect monitor's stale trigger must stay
         below the desync kill switch's threshold, or reconnection never gets a
-        window to recover before RiskManager trips KILL (2026-08-18 incident —
+        window to recover before RiskManager trips KILL (2026-08-18 incident -
         both thresholds were the same value, so the more-frequently-checked
         kill switch always won the race)."""
         cfg = BotConfig()
@@ -1336,7 +1336,7 @@ class TestWsHealthMonitor:
     ):
         """The health monitor must use ws_reconnect_stale_seconds (kept below
         max_time_desynced_seconds) as its trigger, not the kill threshold
-        itself — otherwise reconnection never fires before the kill switch."""
+        itself, otherwise reconnection never fires before the kill switch."""
         import time as time_mod
 
         md._config.operational.ws_reconnect_stale_seconds = 10.0

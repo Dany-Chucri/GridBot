@@ -1,4 +1,4 @@
-Below is a full end-to-end design for a Hyperliquid perps grid bot in Python, incorporating everything we discussed: regime filtering, inventory caps, breakout handling, volatility circuit breakers, funding awareness, fee/slippage realism, reconciliation, persistence, and operational reliability — no loose ends.
+Below is a full end-to-end design for a Hyperliquid perps grid bot in Python, incorporating everything we discussed: regime filtering, inventory caps, breakout handling, volatility circuit breakers, funding awareness, fee/slippage realism, reconciliation, persistence, and operational reliability, no loose ends.
 
 0) Ground rules and constraints (Hyperliquid-specific)
 
@@ -465,7 +465,7 @@ Anchor Layer 3 (breakout recovery grid)
 
 Each activates under different conditions.
 
-Layer 1 — Core Grid
+Layer 1, Core Grid
 
 Your normal anchored adaptive grid.
 
@@ -486,7 +486,7 @@ capital_allocation = 60%
 
 This grid is disabled immediately on breakout.
 
-Layer 2 — Expansion Grid
+Layer 2, Expansion Grid
 
 This grid activates outside the core range but before breakout flattening.
 
@@ -511,7 +511,7 @@ capital_allocation = 25%
 
 Spacing is wider so the bot doesn't overtrade during expansion.
 
-Layer 3 — Recovery Grid (Optional but powerful)
+Layer 3, Recovery Grid (Optional but powerful)
 
 After a breakout flatten event, instead of immediately restarting the core grid, you run a very wide probing grid.
 

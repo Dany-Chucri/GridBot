@@ -1,4 +1,4 @@
-"""RiskManager — enforces all safety constraints.
+"""RiskManager, enforces all safety constraints.
 
 Responsibilities (design doc section 3.2):
 - Leverage and liquidation buffer checks (section 6.1)
@@ -33,9 +33,8 @@ _48H_MS = 48 * 60 * 60 * 1000
 _7D_MS = 7 * 24 * 60 * 60 * 1000
 
 # Max gap between consecutive vol samples for them to count as one
-# continuous history run (project decision, see memory: vol history
-# persistence). Restarts/reconnects that resolve faster than this don't
-# cost the bootstrap window; gaps wider than this (a real outage) do.
+# continuous history run. Restarts/reconnects that resolve faster than this
+# don't cost the bootstrap window; gaps wider than this (a real outage) do.
 _MAX_CONTINUOUS_GAP_MS = 5 * 60 * 1000
 
 # Taker fee estimate for the worst-case-loss preflight formula (section 6.3:
@@ -48,13 +47,13 @@ _TAKER_FEE_BPS = 5.0
 class RiskAction(Enum):
     """Actions the RiskManager can recommend."""
     CONTINUE = auto()           # All clear, proceed with grid
-    SKEW_INVENTORY = auto()     # Soft cap hit — skew order sizes
-    REDUCE_ONLY = auto()        # Hard cap hit — reduce-only orders
-    SKEW_FUNDING = auto()       # Moderate funding — bias grid
-    PAUSE_GRID = auto()         # Vol pause or extreme funding — no new orders
-    SUPPRESS_NEW_ENTRIES = auto()  # Momentum micro-filter — keep existing, no new
-    CANCEL_AND_FLATTEN = auto() # Breakout / vol kill / drawdown — emergency
-    KILL = auto()               # Dead state — manual restart required
+    SKEW_INVENTORY = auto()     # Soft cap hit, skew order sizes
+    REDUCE_ONLY = auto()        # Hard cap hit, reduce-only orders
+    SKEW_FUNDING = auto()       # Moderate funding, bias grid
+    PAUSE_GRID = auto()         # Vol pause or extreme funding, no new orders
+    SUPPRESS_NEW_ENTRIES = auto()  # Momentum micro-filter, keep existing, no new
+    CANCEL_AND_FLATTEN = auto() # Breakout / vol kill / drawdown, emergency
+    KILL = auto()               # Dead state, manual restart required
 
 
 @dataclass
@@ -73,7 +72,7 @@ class RiskManager:
         self._portfolio_config = config.portfolio
 
         # Rolling drawdown tracking: flat list of (timestamp_ms, equity) tuples.
-        # Account-level — one account shared across assets.
+        # Account-level, one account shared across assets.
         self._equity_history: list[tuple[int, float]] = []
 
         # Error tracking
@@ -87,7 +86,7 @@ class RiskManager:
         self._vol_recovery_start: dict[str, int | None] = {}
 
     # ------------------------------------------------------------------
-    # Main entry point — called every cycle
+    # Main entry point, called every cycle
     # ------------------------------------------------------------------
 
     def evaluate(self, state: AssetState) -> RiskDecision:
@@ -255,7 +254,7 @@ class RiskManager:
                 )
 
         # Vol spike: realized vol > vol_kill_percentile
-        # Same 48h bootstrap gate as _check_volatility (see its docstring) —
+        # Same 48h bootstrap gate as _check_volatility (see its docstring) -
         # this check duplicates that one's kill threshold and always fires
         # first in evaluate()'s check order (breakout before vol), so it
         # needs the identical cold-start guard or a thin-history sample trips
@@ -289,7 +288,7 @@ class RiskManager:
         vol_kill_threshold -> cancel all + flatten.
 
         Both thresholds are defined (design doc 6.4) as percentiles of
-        trailing 7d vol, which is meaningless with under 48h of history — a
+        trailing 7d vol, which is meaningless with under 48h of history, a
         single cold-start sample is trivially its own 100th percentile. Gated
         on the same bootstrap window as `detect_regime` (project decision:
         <48h -> no decision, 48h-7d -> tightened threshold) so a fresh start
@@ -329,7 +328,7 @@ class RiskManager:
                 details={"percentile": vol_percentile},
             )
 
-        # Vol is below pause — check if recovery is needed.
+        # Vol is below pause, check if recovery is needed.
         # Key not in dict → vol was never elevated for this symbol → no recovery.
         # Key is None → vol was elevated, just dropped → start recovery timer.
         # Key is a timestamp → recovery in progress → check elapsed.
@@ -338,7 +337,7 @@ class RiskManager:
 
         recovery_start = self._vol_recovery_start[symbol]
         if recovery_start is None:
-            # Vol just dropped below pause — start the recovery timer.
+            # Vol just dropped below pause, start the recovery timer.
             # Grid stays paused until recovery period elapses.
             vol_hist = self._vol_history.get(symbol, [])
             if vol_hist:
@@ -361,7 +360,7 @@ class RiskManager:
                     details={"recovery_remaining_ms": recovery_ms - (now_ms - recovery_start)},
                 )
 
-        # Recovery period elapsed — clear state and resume
+        # Recovery period elapsed, clear state and resume
         del self._vol_recovery_start[symbol]
         return None
 
@@ -570,9 +569,8 @@ class RiskManager:
 
         Samples on the far side of a large gap (a real outage, not a
         restart/reconnect that resolved quickly) don't count toward
-        sufficiency — they may be real, but they no longer establish that
-        we've had *continuous* visibility into recent conditions. Project
-        decision, see memory: vol history persistence.
+        sufficiency, they may be real, but they no longer establish that
+        we've had *continuous* visibility into recent conditions.
         """
         history = self._vol_history.get(symbol, [])
         if not history:
@@ -589,7 +587,7 @@ class RiskManager:
         """Seed vol history from persisted samples on restart recovery.
 
         Samples are trimmed to the 7d window relative to `now_ms` (not the
-        last-persisted timestamp) — a long-dormant DB can hold samples that
+        last-persisted timestamp), a long-dormant DB can hold samples that
         are individually within 7d of each other but stale relative to
         actual now.
         """
@@ -622,7 +620,7 @@ class RiskManager:
         span_ms = newest_ts - oldest_ts
 
         if span_ms >= _7D_MS:
-            # Steady state — no bias
+            # Steady state, no bias
             return base_threshold
 
         # Bootstrap bias: interpolate between tighter threshold and configured
@@ -692,7 +690,7 @@ class RiskManager:
 
         Also derives `config.max_abs_position` from the asset's share of the
         shared risk budget (section 9.1: "Each asset's inventory caps ... are
-        derived from its allocation") when `mid_price` is available — it is
+        derived from its allocation") when `mid_price` is available, it is
         not read as a raw config literal.
 
         Returns list of violation messages (empty = pass).
@@ -735,7 +733,7 @@ class RiskManager:
         # worst_case_loss = grid_range * max_abs_position + flatten_slippage + taker_fees
         # Must be <= max_daily_drawdown * account_equity
         # (grid_range_frac + flatten_slippage_frac + taker_fee_frac) * exposure_frac
-        # is the equity-fraction form — no price needed since exposure_frac is
+        # is the equity-fraction form, no price needed since exposure_frac is
         # already normalized to account_equity.
         loss_pct_of_equity = (
             grid_range_frac + config.max_flatten_slippage_bps / 10000 + _TAKER_FEE_BPS / 10000
@@ -746,7 +744,7 @@ class RiskManager:
                 f"max_daily_drawdown {config.max_daily_drawdown_pct:.4f}"
             )
 
-        # 3. Flattenability — just check the formula is valid
+        # 3. Flattenability, just check the formula is valid
         # This is a runtime check; pre-flight validates the config is plausible
         if config.max_flatten_slippage_bps <= 0:
             violations.append("max_flatten_slippage_bps must be positive")
@@ -770,7 +768,7 @@ class RiskManager:
         """
         remaining_budget_bps = config.max_flatten_slippage_bps - current_spread_bps
         if remaining_budget_bps <= 0 or config.depth_impact_scale <= 0:
-            # Spread exceeds slippage budget — effective cap is zero/minimum
+            # Spread exceeds slippage budget, effective cap is zero/minimum
             return 0.0
 
         max_flattenable = (remaining_budget_bps / config.depth_impact_scale) * recent_avg_depth

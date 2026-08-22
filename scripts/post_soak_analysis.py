@@ -5,7 +5,7 @@ Reads a GridBot StateStore SQLite DB and prints a markdown report covering
 the metrics listed in `docs/plans/implementation-plan.md` Phase 8.4:
 
   - Fill profitability after fees
-  - Maker vs taker ratio (grid fills should be ~100% maker — takers imply
+  - Maker vs taker ratio (grid fills should be ~100% maker, takers imply
     flatten activity)
   - Per-symbol fill counts and traded notional
   - Grid config snapshot (step_bps) with a note on whether the fee floor
@@ -19,7 +19,7 @@ Usage:
     python scripts/post_soak_analysis.py --since-hours 72 gridbot.db
 
 Log-based metrics (regime transition counts, flatten attempts, reconcile
-errors) are NOT derivable from the DB alone — tail `journalctl -u gridbot`
+errors) are NOT derivable from the DB alone, tail `journalctl -u gridbot`
 for those and cross-reference against this report.
 """
 
@@ -161,7 +161,7 @@ def _section_fills(conn: sqlite3.Connection, since_ms: int | None) -> str:
     for sym, s in per_sym.items():
         if s.fills > 0 and s.taker_fills > 0:
             notes.append(
-                f"- **{sym}**: {s.taker_fills} taker fills observed — expected only "
+                f"- **{sym}**: {s.taker_fills} taker fills observed, expected only "
                 "during emergency flatten. Cross-reference with `journalctl` for "
                 "flatten events."
             )
@@ -238,7 +238,7 @@ def _section_heartbeat(conn: sqlite3.Connection, now_ms: int) -> str:
 def _section_pending_flips(conn: sqlite3.Connection) -> str:
     rows = list(conn.execute("SELECT * FROM pending_flips"))
     if not rows:
-        return "## Pending Flips\n\n_None — clean flip queue._\n"
+        return "## Pending Flips\n\n_None, clean flip queue._\n"
 
     out = ["## Pending Flips (leftovers at end of window)\n"]
     out.append("| Symbol | Price | Side | Size | Originating fill |")

@@ -1,4 +1,4 @@
-# GridBot — testnet soak configuration (Phase 8.3)
+# GridBot: testnet soak configuration (Phase 8.3)
 #
 # Reduced surface for the 48-72h soak per design doc 10.5:
 #   - Single asset (BTC) to minimize variance.
@@ -15,7 +15,7 @@ assets:
     leverage: 2.0
     levels_per_side: 10          # reduced from default 25
     capital_allocation: 0.60
-    # max_abs_position is NOT set here — RiskManager.preflight_check derives
+    # max_abs_position is NOT set here, RiskManager.preflight_check derives
     # it at startup from this asset's share of the shared risk budget
     # (total_risk_budget_pct * btc_weight * capital_allocation * leverage,
     # converted to units via mid_price). See gridbot/config.py.
@@ -41,7 +41,7 @@ operational:
   ws_reconnect_stale_seconds: 10
   stagger_initial_levels: 5
 
-# Unattended multi-day soak — enable at least one channel so a kill switch
+# Unattended multi-day soak: enable at least one channel so a kill switch
 # or flatten failure at 3am doesn't sit silently in the log. Secrets go in
 # gridbot.env, not here (see deploy/gridbot.env.example).
 alerting:
