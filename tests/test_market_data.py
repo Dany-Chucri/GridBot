@@ -1016,6 +1016,16 @@ class TestRESTFetches:
         assert orders == []
 
     @pytest.mark.asyncio
+    async def test_fetch_open_orders_raises_on_failure(self, md_with_info: MarketData):
+        """Must propagate, not swallow to `[]`: callers use `[]` to mean
+        "exchange has zero open orders" and would otherwise wipe out real
+        resting orders from local state on a transient fetch failure."""
+        md = md_with_info
+        md._info.frontend_open_orders = MagicMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await md.fetch_open_orders("BTC-PERP")
+
+    @pytest.mark.asyncio
     async def test_fetch_fills(self, md_with_info: MarketData):
         md = md_with_info
         md._info.user_fills_by_time = MagicMock(return_value=[
@@ -1121,6 +1131,16 @@ class TestRESTFetches:
         })
         pos = await md.fetch_position("BTC-PERP")
         assert pos.liquidation_price is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_position_raises_on_failure(self, md_with_info: MarketData):
+        """Must propagate, not swallow to `None`: the flatten retry loop
+        treats `None` as an exchange-confirmed flat position and would stop
+        retrying on a transient fetch failure instead of a real fill."""
+        md = md_with_info
+        md._info.user_state = MagicMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            await md.fetch_position("BTC-PERP")
 
     @pytest.mark.asyncio
     async def test_fetch_exchange_pnl(self, md_with_info: MarketData):

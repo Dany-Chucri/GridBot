@@ -543,7 +543,14 @@ class MarketData:
     # ------------------------------------------------------------------
 
     async def fetch_open_orders(self, symbol: str) -> list[OpenOrder]:
-        """REST fetch of current open orders, backup consistency check."""
+        """REST fetch of current open orders, backup consistency check.
+
+        Raises on failure rather than returning `[]`: callers use this as
+        exchange truth for reconciliation, and a fetch failure is not the
+        same fact as "the exchange has zero open orders." Swallowing the
+        exception here would make it indistinguishable from that, causing
+        reconciliation to wipe out real resting orders from local state.
+        """
         if not self._info or not self._config.wallet_address:
             return []
 
@@ -555,7 +562,7 @@ class MarketData:
             )
         except Exception:
             logger.error("Failed to fetch open orders for %s", symbol, exc_info=True)
-            return []
+            raise
 
         coin = self._to_coin(symbol).upper()
         result: list[OpenOrder] = []
@@ -624,7 +631,15 @@ class MarketData:
         return result
 
     async def fetch_position(self, symbol: str) -> Position | None:
-        """REST fetch of current position, backup consistency check."""
+        """REST fetch of current position, backup consistency check.
+
+        Raises on failure rather than returning `None`: `None` here means
+        "exchange confirms flat," and callers, including the flatten state
+        machine's re-query loop, use it as the fully-flattened signal. A
+        fetch failure treated the same way would let a failed re-query look
+        like an exchange-confirmed flat position, ending the flatten
+        retry loop while a real position is still open.
+        """
         if not self._info or not self._config.wallet_address:
             return None
 
@@ -636,7 +651,7 @@ class MarketData:
             )
         except Exception:
             logger.error("Failed to fetch position for %s", symbol, exc_info=True)
-            return None
+            raise
 
         coin = self._to_coin(symbol).upper()
         for ap in state.get("assetPositions", []):
