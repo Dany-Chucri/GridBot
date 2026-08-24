@@ -705,6 +705,49 @@ class TestBatchSubmission:
         om._client.bulk_orders.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_submit_batch_place_failure_propagates(self):
+        """A batch-place exception (e.g. malformed request) is not swallowed.
+
+        Unlike a per-order rejection reported in the response body, this
+        means no order in the batch ever reached the exchange, and must
+        surface to the caller so it counts toward the consecutive-error
+        kill switch instead of retrying forever in silence.
+        """
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_orders.side_effect = ValueError(
+            "float_to_wire causes rounding", 78573.3658405173
+        )
+
+        places = [_desired()]
+
+        with pytest.raises(ValueError):
+            await om._submit_batch([], places)
+
+    @pytest.mark.asyncio
+    async def test_submit_batch_rounds_price_to_tick(self):
+        """Placement prices are snapped to tick_size before hitting the SDK.
+
+        Grid/anchor arithmetic produces float noise (e.g. anchor * (1 - i *
+        step_bps / 10_000)) that the Hyperliquid SDK's float_to_wire rejects
+        outright if not rounded to a clean multiple of tick_size first.
+        """
+        om = _om()
+        om._client = MagicMock()
+        captured_args = []
+
+        def mock_place(reqs):
+            captured_args.extend(reqs)
+            return {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}}}
+
+        om._client.bulk_orders = mock_place
+
+        order = _desired(symbol="BTC-PERP", price=78573.3658405173)
+        await om._submit_batch([], [order])
+
+        assert captured_args[0]["limit_px"] == 78573.0
+
+    @pytest.mark.asyncio
     async def test_submit_batch_builds_correct_order_request(self):
         """Placement request has correct format for Hyperliquid SDK."""
         om = _om()

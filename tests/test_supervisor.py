@@ -438,6 +438,29 @@ class TestCycle:
         ss.update_heartbeat.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_cycle_propagates_reconcile_failure(self):
+        """A reconcile-batch exception (e.g. malformed order price) must
+        propagate out of _run_cycle uncaught, not be absorbed silently.
+
+        _run_cycle itself has no try/except around reconcile, the outer
+        run() loop is what catches it and calls record_error() (see
+        TestMaintenance for the maintenance-classification counterpart). If
+        this stopped propagating, a persistently malformed order would fail
+        every cycle forever without ever tripping the consecutive-error
+        kill switch.
+        """
+        om = _mock_order_manager()
+        om.reconcile = AsyncMock(side_effect=ValueError("float_to_wire causes rounding"))
+        sup = _make_supervisor(order_manager=om)
+
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[asset_cfg.symbol]
+        state.bot_state = BotState.RUNNING
+
+        with pytest.raises(ValueError):
+            await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+    @pytest.mark.asyncio
     async def test_cycle_holds_last_equity_when_fetch_unavailable(self):
         """Regression (2026-08-18 false-KILL incident): a None equity read
         (e.g. mid-WS-reconnect, when MarketData._info is torn down) must not
