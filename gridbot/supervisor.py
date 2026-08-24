@@ -378,12 +378,18 @@ class Supervisor:
         # and equity while waiting, a planned cooldown (default 30 min) is
         # not a data gap, only MAINTENANCE (a real exchange-side outage)
         # should be allowed to blow _MAX_CONTINUOUS_GAP_MS and reset
-        # bootstrap, or leave a hole in the drawdown window.
+        # bootstrap, or leave a hole in the drawdown window. But COOLDOWN
+        # skips the desync/maintenance checks below entirely, so a real
+        # outage that happens to fall inside a cooldown window would
+        # otherwise go undetected: skip sampling while the WS is stale so
+        # a genuine outage still shows up as a gap to the continuity check
+        # instead of being backfilled with repeated stale-price readings.
         if state.bot_state == BotState.COOLDOWN:
             await self._state_store.update_heartbeat(symbol, now_ms)
             if state.cooldown_until_ms is not None and now_ms < state.cooldown_until_ms:
-                await self._record_equity_sample(state, now_ms)
-                await self._record_vol_sample(symbol, now_ms)
+                if not self._ws_is_stale(now_ms):
+                    await self._record_equity_sample(state, now_ms)
+                    await self._record_vol_sample(symbol, now_ms)
                 return
             logger.info("Cooldown expired for %s, resuming", symbol)
             state.bot_state = BotState.RUNNING
