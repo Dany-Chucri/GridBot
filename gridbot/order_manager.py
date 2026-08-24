@@ -19,10 +19,10 @@ import logging
 import math
 import os
 import time
-from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any, Callable
 
 from gridbot.config import AssetConfig, BotConfig
+from gridbot.pricing import round_to_tick
 from gridbot.types import (
     DesiredOrder,
     Fill,
@@ -87,22 +87,6 @@ class OrderManager:
     def _tif_to_sdk(tif: TimeInForce) -> str:
         """Convert our TimeInForce enum to Hyperliquid SDK string."""
         return {"gtc": "Gtc", "ioc": "Ioc", "alo": "Alo"}[tif.value]
-
-    @staticmethod
-    def _round_to_tick(price: float, tick_size: float) -> float:
-        """Round a price to the asset's tick size.
-
-        Grid/anchor arithmetic produces prices with arbitrary float noise
-        (e.g. 78573.3658405173). The Hyperliquid SDK's float_to_wire rejects
-        any price that doesn't round-trip cleanly, so every price sent to the
-        exchange must be snapped to a clean multiple of tick_size first.
-        """
-        if tick_size <= 0:
-            return price
-        ticks = (Decimal(str(price)) / Decimal(str(tick_size))).quantize(
-            Decimal("1"), rounding=ROUND_HALF_EVEN
-        )
-        return float(ticks * Decimal(str(tick_size)))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -241,7 +225,7 @@ class OrderManager:
             is_buy = pos_size < 0
             distance = (breakout_atr_distance + backstop_buffer_atr) * atr
             trigger_price = (anchor - distance) if pos_size > 0 else (anchor + distance)
-            trigger_price = self._round_to_tick(
+            trigger_price = round_to_tick(
                 trigger_price, self._get_asset_config(symbol).tick_size
             )
             backstop_cloid = self._generate_backstop_id(symbol, direction, config_hash)
@@ -492,7 +476,7 @@ class OrderManager:
             "coin": self._to_coin(order.symbol),
             "is_buy": order.side == OrderSide.BUY,
             "sz": order.size,
-            "limit_px": self._round_to_tick(order.price, tick_size),
+            "limit_px": round_to_tick(order.price, tick_size),
             "order_type": self._build_order_type(order),
             "reduce_only": order.reduce_only,
         }
@@ -908,7 +892,7 @@ class OrderManager:
         else:
             # Short position: stop-loss triggers above anchor
             trigger_price = anchor + distance
-        trigger_price = self._round_to_tick(trigger_price, self._get_asset_config(symbol).tick_size)
+        trigger_price = round_to_tick(trigger_price, self._get_asset_config(symbol).tick_size)
 
         # Generate deterministic backstop order ID (design doc section 6.8)
         backstop_cloid = self._generate_backstop_id(symbol, direction, config_hash)
@@ -1157,7 +1141,7 @@ class OrderManager:
         """
         loop = asyncio.get_running_loop()
         coin = self._to_coin(symbol)
-        limit_price = self._round_to_tick(limit_price, self._get_asset_config(symbol).tick_size)
+        limit_price = round_to_tick(limit_price, self._get_asset_config(symbol).tick_size)
 
         order_req = {
             "coin": coin,

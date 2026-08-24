@@ -433,6 +433,40 @@ class TestInventorySkew:
 class TestCoreLevels:
     """Section 5.2, Layer 1."""
 
+    def test_prices_rounded_to_tick_size(self):
+        """Level prices are snapped to tick_size, not left as raw float noise."""
+        eng = _engine(cfg=_cfg(tick_size=1.0))
+        vol = _vol(atr=500.0)
+        levels = eng._compute_core_levels(
+            anchor=50000.0, step_bps=17.3, vol_metrics=vol,
+            inventory_zone=InventoryZone.NORMAL, position_size=0.0,
+            order_size=0.1,
+        )
+        for l in levels:
+            assert l.price == round(l.price)
+
+    def test_price_stable_across_tiny_step_bps_drift(self):
+        """Two calls with imperceptibly different step_bps (as happens every
+        cycle from live ATR readings) must produce identical rounded prices
+        for what is really the same grid level, otherwise OrderManager's
+        reconcile diff never recognizes an already-resting order as matched
+        and cancels + replaces it every single cycle."""
+        eng = _engine(cfg=_cfg(tick_size=1.0))
+        vol = _vol(atr=500.0)
+        levels_a = eng._compute_core_levels(
+            anchor=79000.0, step_bps=20.001, vol_metrics=vol,
+            inventory_zone=InventoryZone.NORMAL, position_size=0.0,
+            order_size=0.1,
+        )
+        levels_b = eng._compute_core_levels(
+            anchor=79000.0, step_bps=20.004, vol_metrics=vol,
+            inventory_zone=InventoryZone.NORMAL, position_size=0.0,
+            order_size=0.1,
+        )
+        prices_a = sorted(l.price for l in levels_a)
+        prices_b = sorted(l.price for l in levels_b)
+        assert prices_a == prices_b
+
     def test_correct_number_of_levels(self):
         eng = _engine()
         vol = _vol(atr=500.0)
@@ -539,6 +573,18 @@ class TestExpansionLevels:
             position_size=0.0, account_equity=100_000.0,
         )
         assert levels == []
+
+    def test_prices_rounded_to_tick_size(self):
+        eng = _engine(cfg=_cfg(tick_size=1.0))
+        vol = _vol(atr=500.0)
+        levels = eng._compute_expansion_levels(
+            anchor=50000.0, mid_price=51300.0, step_bps=17.3,
+            vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
+            position_size=0.0, account_equity=100_000.0,
+        )
+        assert levels
+        for l in levels:
+            assert l.price == round(l.price)
 
     def test_empty_when_mid_beyond_breakout(self):
         eng = _engine()

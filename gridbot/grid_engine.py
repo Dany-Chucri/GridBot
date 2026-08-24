@@ -19,6 +19,7 @@ import hashlib
 import logging
 
 from gridbot.config import AssetConfig, OperationalConfig
+from gridbot.pricing import round_to_tick
 from gridbot.types import (
     AssetState,
     DesiredOrder,
@@ -167,7 +168,7 @@ class GridEngine:
 
         # Buy levels below anchor
         for i in range(1, self._config.levels_per_side + 1):
-            price = anchor * (1 - i * step_bps / 10_000)
+            price = round_to_tick(anchor * (1 - i * step_bps / 10_000), self._config.tick_size)
             if abs(price - anchor) > core_range:
                 break
             levels.append(GridLevel(
@@ -177,7 +178,7 @@ class GridEngine:
 
         # Sell levels above anchor
         for i in range(1, self._config.levels_per_side + 1):
-            price = anchor * (1 + i * step_bps / 10_000)
+            price = round_to_tick(anchor * (1 + i * step_bps / 10_000), self._config.tick_size)
             if abs(price - anchor) > core_range:
                 break
             levels.append(GridLevel(
@@ -231,7 +232,7 @@ class GridEngine:
             offset = core_range + i * anchor * expansion_step_bps / 10_000
             if offset > expansion_range:
                 break
-            price = anchor - offset
+            price = round_to_tick(anchor - offset, self._config.tick_size)
             levels.append(GridLevel(
                 price=price, side=OrderSide.BUY, size=expansion_size,
                 layer=GridLayer.EXPANSION,
@@ -242,7 +243,7 @@ class GridEngine:
             offset = core_range + i * anchor * expansion_step_bps / 10_000
             if offset > expansion_range:
                 break
-            price = anchor + offset
+            price = round_to_tick(anchor + offset, self._config.tick_size)
             levels.append(GridLevel(
                 price=price, side=OrderSide.SELL, size=expansion_size,
                 layer=GridLayer.EXPANSION,
