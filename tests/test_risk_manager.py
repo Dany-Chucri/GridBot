@@ -532,6 +532,25 @@ class TestVolatilityCircuitBreakers:
         result = rm._check_volatility("BTC-PERP", _vol(realized_vol=0.99), cfg)
         assert result is None
 
+    def test_kill_threshold_not_tightened_during_bootstrap(self):
+        """Only the pause threshold tightens during the 48h-7d bootstrap
+        ramp; kill must stay at its configured value throughout, or a
+        moderate vol reading that should merely pause new orders instead
+        triggers a full cancel-and-flatten (both thresholds would otherwise
+        collapse toward the same bootstrap floor right at the 48h mark)."""
+        rm = _rm()
+        span_48h = 48 * 60 * 60 * 1000
+        rm._vol_history["BTC-PERP"] = _dense_span(span_48h, 0.30, 1.00)
+        cfg = _cfg(vol_pause_percentile=0.80, vol_kill_percentile=0.95)
+
+        # ~78th percentile: above the tightened pause floor (0.70) but well
+        # below the configured kill threshold (0.95).
+        result = rm._check_volatility(
+            "BTC-PERP", _vol(realized_vol=0.30 + 0.70 * 0.78), cfg,
+        )
+        assert result is not None
+        assert result.action == RiskAction.PAUSE_GRID
+
     def test_kill_fires_once_bootstrap_window_met(self):
         """Sanity check: the bootstrap gate only suppresses the check while
         history is thin, once 48h of history exists, kill still fires."""

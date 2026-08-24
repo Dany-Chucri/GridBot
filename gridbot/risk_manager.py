@@ -297,8 +297,17 @@ class RiskManager:
         trailing 7d vol, which is meaningless with under 48h of history, a
         single cold-start sample is trivially its own 100th percentile. Gated
         on the same bootstrap window as `detect_regime` (project decision:
-        <48h -> no decision, 48h-7d -> tightened threshold) so a fresh start
-        can't trip the kill switch on its first observation.
+        <48h -> no decision) so a fresh start can't trip the kill switch on
+        its first observation.
+
+        Only the pause threshold gets tightened during the 48h-7d bootstrap
+        ramp (project decision: 70th percentile pause trigger instead of the
+        configured default). The kill threshold stays at its configured
+        value throughout: it's a severe, rare backstop, and reusing the same
+        bootstrap floor for both would pull kill down toward pause's tightened
+        value, collapsing the two-tier severity gap right when history is
+        thinnest and a moderate vol reading would trigger a full
+        cancel-and-flatten instead of merely pausing new orders.
         """
         if not self._vol_history_sufficient(symbol):
             return None
@@ -307,9 +316,7 @@ class RiskManager:
         if vol_percentile is None:
             return None
 
-        effective_kill_threshold = self._bootstrap_adjusted_threshold(
-            symbol, config.vol_kill_percentile
-        )
+        effective_kill_threshold = config.vol_kill_percentile
         effective_pause_threshold = self._bootstrap_adjusted_threshold(
             symbol, config.vol_pause_percentile
         )
