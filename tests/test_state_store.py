@@ -354,6 +354,24 @@ class TestOpenOrders:
         assert loaded[0].reduce_only is True
 
     @pytest.mark.asyncio
+    async def test_duplicate_client_order_id_does_not_crash(self, store: StateStore, caplog):
+        """Two distinct exchange orders sharing a client_order_id (e.g. a
+        reconcile race) must not crash the save, exchange state is truth
+        and a local cache write failing shouldn't take down the cycle. The
+        last one seen is kept and the collision is logged as an anomaly."""
+        dupe_a = _open_order("dupe")
+        dupe_a.order_id = 111
+        dupe_b = _open_order("dupe")
+        dupe_b.order_id = 222
+
+        await store.save_open_orders("BTC-PERP", [dupe_a, dupe_b])
+
+        loaded = await store.load_open_orders("BTC-PERP")
+        assert len(loaded) == 1
+        assert loaded[0].order_id == 222
+        assert "Duplicate client_order_id" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_symbol_isolation(self, store: StateStore):
         """Orders for different symbols don't interfere."""
         await store.save_open_orders("BTC-PERP", [_open_order("btc1", symbol="BTC-PERP")])

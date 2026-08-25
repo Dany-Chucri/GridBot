@@ -391,12 +391,33 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def save_open_orders(self, symbol: str, orders: list[OpenOrder]) -> None:
+        """Overwrite the local open_orders cache for `symbol`.
+
+        This is a cache mirror of exchange-reported state, never authority
+        (see module docstring / design doc's "exchange is truth"). Two
+        exchange orders should never legitimately share a client_order_id,
+        but if they briefly do (e.g. a reconcile race), a crash here must
+        not take down the reconciliation cycle over a caching concern, keep
+        the last-seen entry and log it as an anomaly worth investigating.
+        """
+        deduped: dict[str, OpenOrder] = {}
+        for order in orders:
+            dupe = deduped.get(order.client_order_id)
+            if dupe is not None:
+                logger.warning(
+                    "Duplicate client_order_id %s for %s: oid=%d and oid=%d both "
+                    "resting, keeping oid=%d in local cache",
+                    order.client_order_id, symbol,
+                    dupe.order_id, order.order_id, order.order_id,
+                )
+            deduped[order.client_order_id] = order
+
         await self._conn.execute("BEGIN")
         try:
             await self._conn.execute(
                 "DELETE FROM open_orders WHERE symbol = ?", (symbol,)
             )
-            for order in orders:
+            for order in deduped.values():
                 await self._conn.execute(
                     """INSERT INTO open_orders
                        (client_order_id, symbol, order_id, price, size, remaining, side, reduce_only)
