@@ -1244,7 +1244,7 @@ class TestMaintenance:
     @pytest.mark.asyncio
     async def test_maintenance_marks_assets(self):
         sup = _make_supervisor()
-        await sup._handle_maintenance()
+        await sup._handle_maintenance("BTC-PERP")
         for state in sup._asset_states.values():
             assert state.bot_state == BotState.MAINTENANCE
 
@@ -1252,8 +1252,28 @@ class TestMaintenance:
     async def test_maintenance_error_does_not_count(self):
         rm = _mock_risk_manager()
         sup = _make_supervisor(risk_manager=rm)
-        await sup._handle_maintenance()
+        await sup._handle_maintenance("BTC-PERP")
         rm.record_error.assert_called_once_with(is_maintenance=True)
+
+    @pytest.mark.asyncio
+    async def test_maintenance_entry_sends_info_alert(self):
+        cb = AsyncMock()
+        sup = _make_supervisor()
+        sup.set_alert_callback(cb)
+        await sup._handle_maintenance("BTC-PERP")
+        cb.assert_awaited_once()
+        severity, message = cb.await_args.args
+        assert severity == "INFO"
+        assert "maintenance" in message.lower()
+
+    @pytest.mark.asyncio
+    async def test_maintenance_entry_alerts_once_per_episode(self):
+        cb = AsyncMock()
+        sup = _make_supervisor(_cfg(("BTC-PERP", "ETH-PERP")))
+        sup.set_alert_callback(cb)
+        await sup._handle_maintenance("BTC-PERP")
+        await sup._handle_maintenance("ETH-PERP")
+        cb.assert_awaited_once()
 
     def test_classifies_connection_errors_as_maintenance(self):
         assert Supervisor._looks_like_maintenance(ConnectionError("refused"))

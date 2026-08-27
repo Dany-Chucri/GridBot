@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
 
 from gridbot.config import AssetConfig, BotConfig
 from gridbot.grid_engine import GridEngine
@@ -37,6 +36,7 @@ from gridbot.pnl_monitor import PnLMonitor
 from gridbot.risk_manager import RiskAction, RiskDecision, RiskManager
 from gridbot.state_store import StateStore
 from gridbot.types import (
+    AlertCallback,
     AssetState,
     BotState,
     Fill,
@@ -49,8 +49,6 @@ from gridbot.types import (
 
 logger = logging.getLogger(__name__)
 
-
-AlertCallback = Callable[[str, str], Awaitable[None]]
 
 _INITIAL_WS_TIMEOUT_S = 30.0
 _WS_STALE_MS = 10_000
@@ -147,6 +145,7 @@ class Supervisor:
     def set_alert_callback(self, cb: AlertCallback) -> None:
         """Install a pluggable alert transport (Telegram/Discord/etc)."""
         self._alert_callback = cb
+        self._market_data.set_alert_callback(cb)
 
     # ------------------------------------------------------------------
     # Initialization & recovery
@@ -361,7 +360,7 @@ class Supervisor:
                             "Cycle error for %s looks like maintenance: %s",
                             symbol, exc,
                         )
-                        await self._handle_maintenance()
+                        await self._handle_maintenance(symbol)
                     else:
                         logger.exception("Cycle failed for %s", symbol)
                         self._risk_manager.record_error()
@@ -402,7 +401,7 @@ class Supervisor:
                 await self._rest_reconciliation(symbol)
                 state.bot_state = BotState.RUNNING
                 await self._state_store.update_heartbeat(symbol, now_ms)
-                self._log_maintenance_duration_if_done(now_ms)
+                await self._log_maintenance_duration_if_done(now_ms)
             return
 
         # WS staleness feeds the desync kill switch in RiskManager.
@@ -512,7 +511,7 @@ class Supervisor:
                 "failure, entering MAINTENANCE instead: %s",
                 symbol, self._market_data.get_last_reconnect_error(),
             )
-            await self._handle_maintenance()
+            await self._handle_maintenance(symbol)
             return
 
         # 4. Dispatch risk action. Actions that skip all further grid/persist
@@ -993,7 +992,7 @@ class Supervisor:
     # Maintenance detection (section 10.4)
     # ------------------------------------------------------------------
 
-    async def _handle_maintenance(self) -> None:
+    async def _handle_maintenance(self, symbol: str) -> None:
         """Enter maintenance-aware mode for all assets.
 
         MarketData handles the WS reconnect with exponential backoff
@@ -1003,12 +1002,15 @@ class Supervisor:
         logger.warning("Entering MAINTENANCE mode")
         if self._maintenance_entered_ms is None:
             self._maintenance_entered_ms = int(time.time() * 1000)
+            await self._send_alert(
+                "INFO", f"Exchange maintenance detected (triggered by {symbol})"
+            )
         for state in self._asset_states.values():
             if state.bot_state not in (BotState.DEAD, BotState.SHUTTING_DOWN):
                 state.bot_state = BotState.MAINTENANCE
         self._risk_manager.record_error(is_maintenance=True)
 
-    def _log_maintenance_duration_if_done(self, now_ms: int) -> None:
+    async def _log_maintenance_duration_if_done(self, now_ms: int) -> None:
         """Log total MAINTENANCE episode duration once every asset has exited.
 
         Assets can exit MAINTENANCE on different cycles, so this only fires
@@ -1024,6 +1026,9 @@ class Supervisor:
             return
         duration_s = (now_ms - self._maintenance_entered_ms) / 1000.0
         logger.warning("MAINTENANCE episode ended after %.1fs", duration_s)
+        await self._send_alert(
+            "INFO", f"Exchange maintenance ended after {duration_s:.1f}s"
+        )
         self._maintenance_entered_ms = None
 
     # ------------------------------------------------------------------

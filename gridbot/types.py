@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+# Transport-agnostic alert hook shared by Supervisor and MarketData, wired to
+# a real sender (Telegram, Discord, ...) in gridbot.alerting.
+AlertCallback = Callable[[str, str], Awaitable[None]]
 
 
 # ---------------------------------------------------------------------------

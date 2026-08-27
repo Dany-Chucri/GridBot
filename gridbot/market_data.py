@@ -25,7 +25,7 @@ from typing import Any
 from hyperliquid.info import Info
 
 from gridbot.config import BotConfig
-from gridbot.types import Fill, OpenOrder, OrderSide, Position, VolMetrics
+from gridbot.types import AlertCallback, Fill, OpenOrder, OrderSide, Position, VolMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,18 @@ class MarketData:
         self._shutting_down = False
         self._last_reconnect_error: BaseException | None = None
 
+        # Optional operator alert transport, wired in by Supervisor
+        # (design doc section 10.3: "WS disconnected / reconnecting" is a
+        # Warning-level alert, not just a log line).
+        self._alert_callback: AlertCallback | None = None
+
     # ------------------------------------------------------------------
     # Coin/symbol helpers
     # ------------------------------------------------------------------
+
+    def set_alert_callback(self, cb: AlertCallback) -> None:
+        """Install a pluggable alert transport (Telegram/Discord/etc)."""
+        self._alert_callback = cb
 
     def _to_coin(self, symbol: str) -> str:
         """'BTC-PERP' → 'BTC'."""
@@ -362,10 +371,16 @@ class MarketData:
                 stale_ms = self._config.operational.ws_reconnect_stale_seconds * 1000
 
                 if self._last_ws_message_ms > 0 and now_ms - self._last_ws_message_ms > stale_ms:
-                    logger.warning(
-                        "WS stale for %.1fs, reconnecting…",
-                        (now_ms - self._last_ws_message_ms) / 1000,
-                    )
+                    stale_s = (now_ms - self._last_ws_message_ms) / 1000
+                    logger.warning("WS stale for %.1fs, reconnecting…", stale_s)
+                    if self._alert_callback is not None:
+                        try:
+                            await self._alert_callback(
+                                "WARNING",
+                                f"WS stale for {stale_s:.1f}s, reconnecting",
+                            )
+                        except Exception:
+                            logger.exception("Alert callback failed")
                     await self._reconnect()
             except asyncio.CancelledError:
                 break

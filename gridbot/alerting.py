@@ -1,6 +1,6 @@
 """Alert delivery channels (design doc section 10.3).
 
-Supervisor's alert hook (`gridbot.supervisor.AlertCallback`) is transport-agnostic
+The shared alert hook (`gridbot.types.AlertCallback`) is transport-agnostic
 - it just calls `Callable[[severity, message], Awaitable[None]]`. This module
 supplies the actual senders (Telegram, Discord) and wires them into a single
 callback from `AlertingConfig` plus secrets read from the environment.
@@ -18,7 +18,7 @@ import os
 import aiohttp
 
 from gridbot.config import AlertingConfig
-from gridbot.supervisor import AlertCallback
+from gridbot.types import AlertCallback
 
 logger = logging.getLogger(__name__)
 
