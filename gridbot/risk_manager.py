@@ -91,6 +91,11 @@ class RiskManager:
         # Vol recovery timer: {symbol: timestamp_ms when vol first dropped below pause}
         self._vol_recovery_start: dict[str, int | None] = {}
 
+        # Which regime signal decided the last detect_regime call, per symbol.
+        # Purely diagnostic: lets the Supervisor annotate transition logs with
+        # the cause (e.g. RANGE reached because a breakout cooldown expired).
+        self._regime_reason: dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # Main entry point, called every cycle
     # ------------------------------------------------------------------
@@ -541,15 +546,20 @@ class RiskManager:
         1. Vol below pause threshold (percentile-based)
         2. Price within X * ATR of moving average
         3. No recent breakout within cooldown window
+
+        The deciding signal is recorded in `self._regime_reason[symbol]` for
+        diagnostic logging; read it via `regime_reason()`.
         """
         # Check vol history sufficiency
         if not self._vol_history_sufficient(symbol):
-            return Regime.UNKNOWN
+            return self._classified(symbol, Regime.UNKNOWN, "insufficient-vol-history")
 
         # Signal 1: Volatility level
         vol_percentile = self._compute_vol_percentile(symbol, vol_metrics.realized_vol)
         if vol_percentile is None:
-            return Regime.UNKNOWN
+            return self._classified(
+                symbol, Regime.UNKNOWN, "vol-percentile-unavailable"
+            )
 
         # Apply bootstrap bias: tighten vol_pause_percentile during bootstrap
         effective_pause_threshold = self._bootstrap_adjusted_threshold(
@@ -557,7 +567,7 @@ class RiskManager:
         )
 
         if vol_percentile > effective_pause_threshold:
-            return Regime.HIGH_VOL
+            return self._classified(symbol, Regime.HIGH_VOL, "vol-above-pause")
 
         # Signal 2: Price distance from moving average (trend filter)
         # RANGE requires price within 2.0 * ATR of moving average
@@ -566,15 +576,24 @@ class RiskManager:
             trend_distance = abs(mid_price - moving_avg)
             trend_threshold = 2.0 * atr
             if trend_distance > trend_threshold:
-                return Regime.TREND
+                return self._classified(symbol, Regime.TREND, "price-far-from-ma")
 
         # Signal 3: No recent breakout within cooldown
         if last_breakout_ms is not None:
             cooldown_ms = config.cooldown_minutes * 60 * 1000
             if now_ms - last_breakout_ms < cooldown_ms:
-                return Regime.TREND
+                return self._classified(symbol, Regime.TREND, "breakout-cooldown")
 
-        return Regime.RANGE
+        return self._classified(symbol, Regime.RANGE, "all-signals-clear")
+
+    def _classified(self, symbol: str, regime: Regime, reason: str) -> Regime:
+        """Record the deciding signal for `symbol` and return `regime`."""
+        self._regime_reason[symbol] = reason
+        return regime
+
+    def regime_reason(self, symbol: str) -> str | None:
+        """Deciding signal from the last detect_regime call for `symbol`."""
+        return self._regime_reason.get(symbol)
 
     def _continuous_run(self, symbol: str) -> list[tuple[int, float]]:
         """Trailing run of vol samples with no internal gap exceeding

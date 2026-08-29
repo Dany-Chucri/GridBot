@@ -71,7 +71,7 @@ Expected log events (design doc 10.2 / 10.3):
 - [ ] `Initialization complete` within 30s of start.
 - [ ] `Pre-flight checks passed` with a positive equity.
 - [ ] `save_bot_state` succeeds (implicit, no exceptions from StateStore).
-- [ ] `regime transition symbol=... UNKNOWN -> ...` logged once vol history clears the 48h bootstrap minimum (section 6.4's bootstrap gate), and again on any later RANGE ↔ TREND / HIGH_VOL change. Regime stays `UNKNOWN` (no grid placed) until then, expected, not a bug.
+- [ ] `regime transition symbol=... UNKNOWN -> ... (insufficient-vol-history)` logged once vol history clears the 48h bootstrap minimum (section 6.4's bootstrap gate), and again on any later RANGE ↔ TREND / HIGH_VOL change. The trailing parenthesical is the deciding signal (`breakout-cooldown`, `price-far-from-ma`, `vol-above-pause`, `all-signals-clear`, ...). Regime stays `UNKNOWN` (no grid placed) until then, expected, not a bug.
 - [ ] Fills routed through the fill pump (look for PnLMonitor updates).
 - [ ] REST reconciliation runs on its own cadence (5s default).
 

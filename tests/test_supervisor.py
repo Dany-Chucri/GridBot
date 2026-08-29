@@ -109,6 +109,7 @@ def _mock_risk_manager(
     rm = MagicMock()
     rm.evaluate = MagicMock(return_value=RiskDecision(action=action, reason=reason))
     rm.detect_regime = MagicMock(return_value=Regime.RANGE)
+    rm.regime_reason = MagicMock(return_value="all-signals-clear")
     rm.preflight_check = MagicMock(return_value=[])
     rm.record_equity = MagicMock()
     rm.record_vol = MagicMock()

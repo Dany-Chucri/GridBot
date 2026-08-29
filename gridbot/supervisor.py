@@ -431,16 +431,18 @@ class Supervisor:
             asset_config,
         )
         if state.regime != self._last_regime[symbol]:
+            reason = self._risk_manager.regime_reason(symbol)
             logger.info(
-                "regime transition symbol=%s %s -> %s",
+                "regime transition symbol=%s %s -> %s (%s)",
                 symbol,
                 self._last_regime[symbol].name,
                 state.regime.name,
+                reason,
             )
             await self._send_alert(
                 "INFO",
                 f"{symbol} regime transition: "
-                f"{self._last_regime[symbol].name} -> {state.regime.name}",
+                f"{self._last_regime[symbol].name} -> {state.regime.name} ({reason})",
             )
             self._last_regime[symbol] = state.regime
         decision = self._risk_manager.evaluate(state)

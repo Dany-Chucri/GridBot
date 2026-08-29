@@ -41,6 +41,8 @@ Regime is per-asset, never coupled across BTC and ETH ([design.md](design.md) se
 
 RANGE requires unanimous agreement from all signals. Any dissent pushes toward the more conservative regime. See [design.md](design.md) section 8.2.
 
+`RiskManager.detect_regime` records the deciding signal per asset (`regime_reason()`): `insufficient-vol-history`, `vol-percentile-unavailable`, `vol-above-pause`, `price-far-from-ma`, `breakout-cooldown`, or `all-signals-clear`. The Supervisor appends it in parentheses to each `regime transition` log line so a return to RANGE names its cause (e.g. a breakout cooldown expiring).
+
 ## Pre-Flight Checks
 
 The bot refuses to start if any of these fail:

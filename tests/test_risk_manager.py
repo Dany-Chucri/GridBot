@@ -205,6 +205,26 @@ class TestRegimeDetection:
         )
         assert regime == Regime.RANGE
 
+    def test_regime_reason_records_deciding_signal(self):
+        rm = _rm()
+        last_ts = _seed_vol_history(rm)
+        cfg = _cfg(cooldown_minutes=30.0)
+
+        rm.detect_regime(
+            "BTC-PERP", 50000.0, _vol(realized_vol=0.40, atr=500.0),
+            moving_avg=50000.0, last_breakout_ms=last_ts - 10 * 60 * 1000,
+            now_ms=last_ts, config=cfg,
+        )
+        assert rm.regime_reason("BTC-PERP") == "breakout-cooldown"
+
+        rm.detect_regime(
+            "BTC-PERP", 50000.0, _vol(realized_vol=0.40, atr=500.0),
+            moving_avg=50000.0, last_breakout_ms=last_ts - 31 * 60 * 1000,
+            now_ms=last_ts, config=cfg,
+        )
+        assert rm.regime_reason("BTC-PERP") == "all-signals-clear"
+        assert rm.regime_reason("ETH-PERP") is None
+
     def test_unknown_with_insufficient_history(self):
         rm = _rm()
         # Only 24h of history, not 48h minimum
