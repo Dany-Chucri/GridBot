@@ -51,13 +51,13 @@ class OrderManager:
         # ALO rejection tracking: symbol -> count in current window
         self._alo_rejection_counts: dict[str, int] = {}
         self._alo_rejection_window_start_ms: int = 0
-        # Negative cache of oids the exchange has reported as already gone
-        # (cancelled, filled, or never rested). The local open-orders view
-        # can lag WS/REST truth by a cycle or two right after a cancel+place,
-        # so without this the diff re-issues doomed cancels for the same oids
-        # every reconcile until the periodic REST rebuild catches up. Entries
-        # expire; HL oids are monotonic and never reused, so the TTL is only
-        # a memory bound.
+        # Negative cache of oids known to be off the book (cancelled by us,
+        # or reported gone by the exchange). The local open-orders view can
+        # lag WS/REST truth by a cycle or two after a cancel+place, so this
+        # is used to (a) not re-issue doomed cancels for those oids and
+        # (b) not re-place their deterministic cloids while they still show
+        # in the view. Entries expire; HL oids are monotonic and never
+        # reused, so the TTL is only a memory bound.
         self._dead_oids: dict[int, float] = {}
 
     # ------------------------------------------------------------------
@@ -415,6 +415,28 @@ class OrderManager:
                 to_place.append(want)
 
         to_cancel = [o for o in current if o.order_id not in matched_current_ids]
+
+        # Duplicate-cloid guard: client order IDs are deterministic
+        # (section 7.3), so a re-placed level regenerates the exact id of its
+        # predecessor. If the local view still shows that predecessor and its
+        # oid is known-dead (cancelled, just not yet dropped from the view),
+        # placing now would momentarily rest two orders on one id whenever
+        # the cancel lags. Defer the placement; the level is re-placed on a
+        # later cycle once the id clears from the view.
+        stale_cloids = {
+            o.client_order_id
+            for o in current
+            if o.client_order_id and self._is_dead_oid(o.order_id)
+        }
+        if stale_cloids:
+            deferred = [o for o in to_place if o.client_order_id in stale_cloids]
+            for o in deferred:
+                logger.debug(
+                    "Deferring placement for %s %s @ %.2f: cloid still held by a dead oid",
+                    o.symbol, o.side.value, o.price,
+                )
+            to_place = [o for o in to_place if o.client_order_id not in stale_cloids]
+
         return to_cancel, to_place
 
     # ------------------------------------------------------------------
@@ -422,7 +444,10 @@ class OrderManager:
     # ------------------------------------------------------------------
 
     def _record_dead_oid(self, oid: int) -> None:
-        """Remember that the exchange reports this oid as no longer on the book."""
+        """Record that this oid is off the book (cancelled by us or reported
+        gone by the exchange). Suppresses re-cancelling it and re-placing its
+        deterministic cloid while the local open-orders view catches up.
+        """
         self._dead_oids[oid] = time.monotonic()
 
     def _is_dead_oid(self, oid: int) -> bool:
@@ -631,6 +656,7 @@ class OrderManager:
                         break
                     order = cancels[i]
                     if "success" in str(s).lower():
+                        self._record_dead_oid(order.order_id)
                         logger.info(
                             "Cancelled oid=%d %s %s @ %.2f",
                             order.order_id,

@@ -930,6 +930,63 @@ class TestDeadOidCache:
         await om.reconcile("BTC-PERP", [], list(stale), mid_price=50000.0)
         assert om._client.bulk_cancel.call_count == 2
 
+    def test_placement_deferred_while_cloid_held_by_dead_oid(self):
+        """A re-placed level regenerates its predecessor's deterministic cloid.
+        While that predecessor still shows in the local view and is known
+        dead, the placement is held back to avoid two orders on one id."""
+        om = _om()
+        cloid = "0x" + "a" * 32
+        current = [_open(client_order_id=cloid, order_id=555, price=50000.0, size=0.10)]
+        om._record_dead_oid(555)
+        # Same price (same cloid), size moved beyond the tolerance band.
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.13)]
+
+        to_cancel, to_place = om._compute_diff(desired, current)
+
+        assert [o.order_id for o in to_cancel] == [555]
+        assert to_place == []
+
+    def test_placement_proceeds_when_cloid_holder_is_live(self):
+        """If the order holding the cloid is not known dead, the normal
+        cancel+replace goes ahead."""
+        om = _om()
+        cloid = "0x" + "a" * 32
+        current = [_open(client_order_id=cloid, order_id=555, price=50000.0, size=0.10)]
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.13)]
+
+        to_cancel, to_place = om._compute_diff(desired, current)
+
+        assert [o.order_id for o in to_cancel] == [555]
+        assert len(to_place) == 1
+
+    @pytest.mark.asyncio
+    async def test_reconcile_does_not_re_place_cloid_of_just_cancelled_order(self):
+        """End to end: after a successful cancel the same cloid is not
+        re-placed on the next cycle while the stale order lingers in view."""
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_cancel.return_value = {
+            "status": "ok",
+            "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+        }
+        om._client.bulk_orders.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}},
+        }
+        cloid = "0x" + "a" * 32
+        # Stale view keeps showing the order at its old size after the cancel.
+        stale = [_open(client_order_id=cloid, order_id=555, price=50000.0, size=0.10)]
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.13)]
+
+        await om.reconcile("BTC-PERP", list(desired), list(stale), mid_price=50000.0)
+        assert om._is_dead_oid(555)
+        om._client.bulk_orders.reset_mock()
+
+        # Next cycle, same stale view: cancel is suppressed (#2) and the
+        # duplicate placement is deferred (#4).
+        await om.reconcile("BTC-PERP", list(desired), list(stale), mid_price=50000.0)
+        om._client.bulk_orders.assert_not_called()
+
 
 # ===========================================================================
 # Test: Emergency Flatten Protocol (integration with mock SDK)

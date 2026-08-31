@@ -828,7 +828,7 @@ Every `reconcile_interval` (default: 5 seconds), the OrderManager:
 
 **Precision:** Prices are snapped to the asset's `tick_size` and sizes to its `sz_decimals` (Hyperliquid szDecimals) at the point each level is computed, not just at the exchange boundary. The HL SDK rejects any price or size whose wire encoding would lose precision. A level whose size rounds below one lot is dropped. See `gridbot/pricing.py`.
 
-**Stale-cancel suppression:** The local open-orders view is WS-primary and can lag exchange truth by a cycle or two right after a cancel+place. When the exchange reports a cancel target as already gone (cancelled, filled, or never rested), the OrderManager records that oid in a short-lived negative cache and omits it from subsequent cancel batches. Without this, the diff re-issues the same doomed cancel every reconcile until the periodic REST rebuild reconciles the view. Entries expire after 60s; HL oids are monotonic and never reused.
+**Stale-view guard:** The local open-orders view is WS-primary and can lag exchange truth by a cycle or two right after a cancel+place. The OrderManager keeps a short-lived negative cache of oids known to be off the book (cancelled by us, or reported gone by the exchange). While an oid is in that cache it is (a) omitted from cancel batches, so the diff stops re-issuing the same doomed cancel every reconcile, and (b) treated as still occupying its deterministic cloid, so the level is not re-placed under that id until the stale order clears from the view (see 7.3). Entries expire after 60s; HL oids are monotonic and never reused.
 
 ### 7.3 Deterministic Client Order IDs
 
@@ -845,6 +845,8 @@ Where `grid_config_hash` is a hash of the current anchor price + range + step. T
 - **Epoch separation:** The epoch counter increments on each re-anchor event, providing additional disambiguation if level prices coincidentally overlap between configurations.
 
 **Why include `grid_config_hash`:** The original research used `(symbol, level_price, side, epoch)`. But during a re-anchor, old and new grids can have overlapping price levels with the same side. Without a config identifier in the order ID, the bot might incorrectly adopt an old order as belonging to the new grid. Including the config hash eliminates this ambiguity.
+
+**Duplicate-cloid guard:** Because the id is deterministic, a level that is cancelled and re-placed regenerates the exact id its predecessor carried. Hyperliquid does not reject a second resting order on the same cloid, so if the predecessor's cancel lags, the book can briefly hold two orders under one id (the local state store then arbitrarily keeps one and orphans the other). Reconciliation defers a placement whose cloid still belongs to a known-dead oid in the stale-view cache above, re-placing on a later cycle once the id clears. The reconcile tolerance band (7.2) makes this rare in the first place: a level that only drifts slightly keeps its original order rather than being re-placed.
 
 ### 7.4 Post-Only (ALO) Rejection Handling
 
