@@ -342,6 +342,8 @@ re_anchor = (
 
 **Why all four conditions:** The original research used only a timer (conditions 1 and 2). Adding regime confirmation (condition 3) and vol stability (condition 4) prevents re-anchoring during the transition from a breakout back to range, exactly when false re-anchoring is most dangerous. Price may have drifted and stabilized in time terms, but if vol is still elevated or the regime filter reads TREND, re-anchoring would chase.
 
+**Establish vs. re-anchor:** The four-condition gate above applies only when a `GridConfig` already exists (shifting a live anchor). When there is no anchor, a fresh one is *established* at the current mid price with no gate, on the first cycle the regime reads RANGE. This happens on initial startup and after a breakout, which discards the anchor (section 6.3 step 4). The gate is unnecessary here because the surrounding conditions already hold: after a breakout the bot has sat through `cooldown_minutes`, has no position and no orders, and only reaches the establish path once regime has independently returned to RANGE.
+
 ### 5.2 Two-Layer Grid Architecture
 
 The bot manages two concurrent grid layers, not three. The original research proposed three layers (Core, Expansion, Recovery). The Recovery layer is deferred.
@@ -579,7 +581,8 @@ breakout = (
 1. **Immediately** cancel all resting grid orders (both layers, batch cancel).
 2. **If inventory is significant** (position > threshold): execute the emergency flatten protocol (section 6.7). This protocol handles depth assessment, chunked execution, partial fills, and retry escalation.
 3. **Enter cooldown** for `cooldown_minutes` (default: 30 min).
-4. **After cooldown:** re-evaluate regime. Only restart the Core Grid if regime reads RANGE.
+4. **Discard the anchor.** The grid is torn down, and price has left the anchor's range by definition. The `GridConfig` is cleared (in memory and in the store, so a restart during cooldown does not resurrect it) and the epoch is bumped. This is a *reset*, not a re-anchor: the four-condition re-anchor gate (section 5.1) governs shifting a *live* anchor, and one of its conditions is `regime == RANGE`, which the distance-breakout check itself would prevent from ever holding if it kept measuring against the stale anchor.
+5. **After cooldown:** re-evaluate regime. Only restart the Core Grid if regime reads RANGE. With no anchor, the distance-breakout check is inert until the grid re-establishes; a fresh anchor is built at the current mid price on the first RANGE cycle (section 5.1, "establish" path).
 
 **This is the single most important safety mechanism.** Most retail grid bots omit breakout detection entirely. They accumulate inventory in a trend until margin is exhausted. The flatten-on-breakout design caps the worst-case loss to:
 

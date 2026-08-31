@@ -131,6 +131,7 @@ def _mock_state_store() -> MagicMock:
     ss.load_vol_history = AsyncMock(return_value=[])
     ss.append_vol_sample = AsyncMock()
     ss.save_grid_config = AsyncMock()
+    ss.delete_grid_config = AsyncMock()
     ss.save_open_orders = AsyncMock()
     ss.save_pending_flips = AsyncMock()
     ss.save_bot_state = AsyncMock()
@@ -946,7 +947,8 @@ class TestRiskActions:
     @pytest.mark.asyncio
     async def test_cancel_and_flatten_enters_cooldown(self):
         om = _mock_order_manager()
-        sup = _make_supervisor(order_manager=om)
+        ss = _mock_state_store()
+        sup = _make_supervisor(order_manager=om, state_store=ss)
         symbol = sup._config.assets[0].symbol
         asset_cfg = sup._config.assets[0]
         state = sup._asset_states[symbol]
@@ -954,6 +956,10 @@ class TestRiskActions:
             symbol=symbol, size=0.5, avg_entry_price=50000.0,
             unrealized_pnl=0.0,
         )
+        state.grid_config = GridConfig(
+            symbol=symbol, anchor=79435.5, range_atr=2.5, step_bps=20.0, epoch=3,
+        )
+        state.anchor_epoch = 3
 
         await sup._handle_risk_action(
             symbol,
@@ -970,16 +976,26 @@ class TestRiskActions:
         assert state.bot_state == BotState.COOLDOWN
         assert state.cooldown_until_ms is not None
         assert state.last_breakout_ms is not None
+        # The pre-breakout anchor is dropped so the distance-breakout check
+        # cannot re-trip against it forever once cooldown ends.
+        assert state.grid_config is None
+        assert state.anchor_epoch == 4
+        ss.delete_grid_config.assert_awaited_once_with(symbol)
 
     @pytest.mark.asyncio
     async def test_cancel_and_flatten_does_not_set_breakout_for_non_breakout(self):
-        """vol-kill and drawdown shouldn't piggy-back on breakout cooldown."""
+        """vol-kill and drawdown shouldn't piggy-back on breakout cooldown,
+        nor drop the anchor (price hasn't necessarily left its range)."""
         om = _mock_order_manager()
-        sup = _make_supervisor(order_manager=om)
+        ss = _mock_state_store()
+        sup = _make_supervisor(order_manager=om, state_store=ss)
         symbol = sup._config.assets[0].symbol
         asset_cfg = sup._config.assets[0]
         state = sup._asset_states[symbol]
         state.position = None
+        state.grid_config = GridConfig(
+            symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+        )
 
         await sup._handle_risk_action(
             symbol,
@@ -992,6 +1008,8 @@ class TestRiskActions:
         )
         assert state.bot_state == BotState.COOLDOWN
         assert state.last_breakout_ms is None
+        assert state.grid_config is not None
+        ss.delete_grid_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancel_and_flatten_dead_stays_dead(self):

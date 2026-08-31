@@ -820,6 +820,18 @@ class Supervisor:
             details = decision.details or {}
             if details.get("type") in _BREAKOUT_DETAIL_TYPES:
                 state.last_breakout_ms = now_ms
+                # Drop the pre-breakout anchor, in memory and in the store.
+                # Price has left its range by definition, so the distance
+                # breakout check (section 6.3) would re-trip against the
+                # stale anchor every cycle once cooldown ends and never let
+                # the grid re-establish. A fresh anchor is built at the
+                # current price on the first RANGE cycle after cooldown
+                # (section 6.3 step 4, via _maintain_anchor).
+                state.grid_config = None
+                state.anchor_epoch += 1
+                state.drift_start_ms = None
+                state.stagger_placed_count = 0
+                await self._state_store.delete_grid_config(symbol)
             await self._state_store.save_bot_state(symbol, state)
             return True
 

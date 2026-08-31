@@ -261,6 +261,20 @@ class TestGridConfig:
         assert (await store.load_grid_config("BTC-PERP")).anchor == 60000.0
         assert (await store.load_grid_config("ETH-PERP")).anchor == 3000.0
 
+    @pytest.mark.asyncio
+    async def test_delete_drops_only_the_named_symbol(self, store: StateStore):
+        await store.save_grid_config(_grid_config("BTC-PERP", 60000.0))
+        await store.save_grid_config(_grid_config("ETH-PERP", 3000.0))
+
+        await store.delete_grid_config("BTC-PERP")
+
+        assert await store.load_grid_config("BTC-PERP") is None
+        assert (await store.load_grid_config("ETH-PERP")).anchor == 3000.0
+
+    @pytest.mark.asyncio
+    async def test_delete_missing_is_noop(self, store: StateStore):
+        await store.delete_grid_config("BTC-PERP")  # must not raise
+
 
 # ---------------------------------------------------------------------------
 # 3.2 Position

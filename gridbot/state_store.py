@@ -334,6 +334,18 @@ class StateStore:
         )
         await self._conn.commit()
 
+    async def delete_grid_config(self, symbol: str) -> None:
+        """Drop the persisted anchor for `symbol`.
+
+        Used when a breakout tears the grid down: the pre-breakout anchor
+        must not survive a restart during cooldown, or the distance-breakout
+        check re-trips against it forever (section 6.3).
+        """
+        await self._conn.execute(
+            "DELETE FROM grid_config WHERE symbol = ?", (symbol,)
+        )
+        await self._conn.commit()
+
     async def load_grid_config(self, symbol: str) -> GridConfig | None:
         cursor = await self._conn.execute(
             "SELECT symbol, anchor, range_atr, step_bps, epoch FROM grid_config WHERE symbol = ?",
