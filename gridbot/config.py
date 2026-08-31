@@ -86,6 +86,13 @@ class AssetConfig:
     tick_size: float = 1.0  # USD, per-asset tick size for ALO price nudging
     sz_decimals: int = 5  # Hyperliquid szDecimals; order sizes snap to this
 
+    # Reconcile hysteresis (section 7.2): a resting order still counts as
+    # matching a desired level while it is within this price/size band, so
+    # the sub-threshold drift in the vol-scaled grid step and order size
+    # does not cancel and replace the whole grid every cycle. 0 = exact match.
+    reconcile_price_tolerance_bps: float = 2.0
+    reconcile_size_tolerance_pct: float = 0.05
+
     # Dynamic slippage (section 5.7)
     base_slippage_bps: float = 1.5
     vol_slippage_scale: float = 2.0

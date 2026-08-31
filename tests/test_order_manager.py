@@ -2071,31 +2071,75 @@ class TestTrancheRefresh:
 
 
 # ===========================================================================
-# Test: Relative tolerance in diff (review fix #10)
+# Test: reconcile hysteresis band in diff (section 7.2)
 # ===========================================================================
 
 
-class TestDiffRelativeTolerance:
-    def test_close_prices_match(self):
-        """Prices within rel_tol=1e-6 are considered matching."""
+class TestDiffToleranceBand:
+    def test_tiny_float_drift_matches(self):
+        """A sub-tick price wobble from the exchange is not a change."""
         om = _om()
         cloid = "0x" + "a" * 32
         desired = [_desired(client_order_id=cloid, price=50000.0, size=0.1)]
-        # Simulate a tiny float drift from exchange
         current = [_open(client_order_id=cloid, price=50000.00004, size=0.1)]
         to_cancel, to_place = om._compute_diff(desired, current)
         assert to_cancel == []
         assert to_place == []
 
-    def test_different_prices_dont_match(self):
-        """Prices differing by more than rel_tol=1e-6 are not matched."""
+    def test_drift_within_price_band_is_left_in_place(self):
+        """A resting order within reconcile_price_tolerance_bps of the desired
+        level (2 bps ~= $10 at $50k) is kept, even with a different cloid."""
+        om = _om()
+        desired = [_desired(client_order_id="0x" + "a" * 32, price=50000.0, size=0.1)]
+        current = [_open(client_order_id="0x" + "z" * 32, order_id=7, price=50008.0, size=0.1)]
+        to_cancel, to_place = om._compute_diff(desired, current)
+        assert to_cancel == []
+        assert to_place == []
+
+    def test_move_beyond_price_band_cancels_and_replaces(self):
+        """A level that has moved more than the band is re-placed."""
         om = _om()
         cloid = "0x" + "a" * 32
         desired = [_desired(client_order_id=cloid, price=50000.0, size=0.1)]
-        current = [_open(client_order_id=cloid, price=50001.0, size=0.1)]
+        current = [_open(client_order_id=cloid, order_id=7, price=50100.0, size=0.1)]
         to_cancel, to_place = om._compute_diff(desired, current)
-        assert len(to_cancel) == 1
+        assert [o.order_id for o in to_cancel] == [7]
         assert len(to_place) == 1
+
+    def test_size_drift_within_pct_band_is_left_in_place(self):
+        """A resting order within reconcile_size_tolerance_pct (5%) is kept."""
+        om = _om()
+        cloid = "0x" + "a" * 32
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.100)]
+        current = [_open(client_order_id=cloid, order_id=7, price=50000.0, size=0.104)]
+        to_cancel, to_place = om._compute_diff(desired, current)
+        assert to_cancel == []
+        assert to_place == []
+
+    def test_size_change_beyond_pct_band_cancels_and_replaces(self):
+        om = _om()
+        cloid = "0x" + "a" * 32
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.100)]
+        current = [_open(client_order_id=cloid, order_id=7, price=50000.0, size=0.130)]
+        to_cancel, to_place = om._compute_diff(desired, current)
+        assert [o.order_id for o in to_cancel] == [7]
+        assert len(to_place) == 1
+
+    def test_closest_resting_order_wins_within_band(self):
+        """Two resting orders inside the band pair with the two nearest
+        desired levels, not cross-matched."""
+        om = _om()
+        desired = [
+            _desired(client_order_id="0x" + "a" * 32, price=50000.0, size=0.1),
+            _desired(client_order_id="0x" + "b" * 32, price=50006.0, size=0.1),
+        ]
+        current = [
+            _open(client_order_id="0x" + "c" * 32, order_id=1, price=50001.0, size=0.1),
+            _open(client_order_id="0x" + "d" * 32, order_id=2, price=50007.0, size=0.1),
+        ]
+        to_cancel, to_place = om._compute_diff(desired, current)
+        assert to_cancel == []
+        assert to_place == []
 
 
 # ===========================================================================

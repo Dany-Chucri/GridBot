@@ -319,6 +319,29 @@ class OrderManager:
             logger.exception("Failed to query backstop orders for %s", symbol)
             return []
 
+    @staticmethod
+    def _order_matches(
+        curr: OpenOrder,
+        want: DesiredOrder,
+        price_tol: float,
+        size_rel_tol: float,
+        size_abs_tol: float,
+    ) -> bool:
+        """True if a resting order is close enough to a desired level to leave
+        in place. Side and reduce_only must match exactly; price and size are
+        compared within a tolerance band so the sub-threshold drift in the
+        vol-scaled grid step and order size does not churn the grid every
+        cycle (section 7.2).
+        """
+        return (
+            curr.side == want.side
+            and curr.reduce_only == want.reduce_only
+            and abs(curr.price - want.price) <= price_tol
+            and math.isclose(
+                curr.size, want.size, rel_tol=size_rel_tol, abs_tol=size_abs_tol
+            )
+        )
+
     def _compute_diff(
         self,
         desired: list[DesiredOrder],
@@ -326,68 +349,72 @@ class OrderManager:
     ) -> tuple[list[OpenOrder], list[DesiredOrder]]:
         """Compute (to_cancel, to_place) diff.
 
-        Matching criteria: same client_order_id OR (same price, side, size,
-        and reduce_only flag). Only touch orders that actually need to change
-        (section 7.2).
+        A desired level matches a resting order by client_order_id, or by
+        (side, reduce_only) plus price and size within the per-asset
+        tolerance band (section 7.2). When several resting orders qualify,
+        the closest in price wins, so identical-price levels (e.g. a pending
+        flip alongside a grid level) each pair with a distinct order. Only
+        orders that actually need to change are touched.
         """
-        # Build lookup of current orders by client_order_id
+        asset_cfg = self._get_asset_config(
+            desired[0].symbol if desired
+            else current[0].symbol if current
+            else ""
+        )
+        price_tol_bps = asset_cfg.reconcile_price_tolerance_bps
+        size_rel_tol = asset_cfg.reconcile_size_tolerance_pct
+        size_abs_tol = 10.0 ** -asset_cfg.sz_decimals  # one lot
+        min_price_tol = asset_cfg.tick_size * 0.5  # float-noise floor
+
         current_by_cloid: dict[str, OpenOrder] = {}
         for order in current:
             if order.client_order_id:
                 current_by_cloid[order.client_order_id] = order
 
-        # Build a signature-based lookup for matching without cloid.
-        # Use a list per signature to handle multiple orders at the same
-        # (price, side, size, reduce_only), e.g. pending flips at the
-        # same price.
-        def _sig(price: float, side: OrderSide, size: float, reduce_only: bool) -> str:
-            return f"{price:.8f}|{side.value}|{size:.8f}|{reduce_only}"
-
-        current_by_sig: dict[str, list[OpenOrder]] = {}
+        # Candidate buckets for tolerant matching without a cloid.
+        buckets: dict[tuple[OrderSide, bool], list[OpenOrder]] = {}
         for order in current:
-            sig = _sig(order.price, order.side, order.size, order.reduce_only)
-            current_by_sig.setdefault(sig, []).append(order)
+            buckets.setdefault((order.side, order.reduce_only), []).append(order)
 
         matched_current_ids: set[int] = set()
         to_place: list[DesiredOrder] = []
 
-        for desired_order in desired:
-            matched = False
+        for want in desired:
+            price_tol = max(want.price * price_tol_bps / 10_000.0, min_price_tol)
+            matched_id: int | None = None
 
-            # Try matching by client_order_id first
-            if desired_order.client_order_id in current_by_cloid:
-                curr = current_by_cloid[desired_order.client_order_id]
-                # Verify the order params still match
-                if (
-                    math.isclose(curr.price, desired_order.price, rel_tol=1e-6)
-                    and curr.side == desired_order.side
-                    and math.isclose(curr.size, desired_order.size, rel_tol=1e-6)
-                    and curr.reduce_only == desired_order.reduce_only
-                ):
-                    matched_current_ids.add(curr.order_id)
-                    matched = True
-
-            # Fallback: match by signature (price, side, size, reduce_only)
-            if not matched:
-                sig = _sig(
-                    desired_order.price,
-                    desired_order.side,
-                    desired_order.size,
-                    desired_order.reduce_only,
+            curr = current_by_cloid.get(want.client_order_id)
+            if (
+                curr is not None
+                and curr.order_id not in matched_current_ids
+                and self._order_matches(
+                    curr, want, price_tol, size_rel_tol, size_abs_tol
                 )
-                candidates = current_by_sig.get(sig, [])
-                for curr in candidates:
-                    if curr.order_id not in matched_current_ids:
-                        matched_current_ids.add(curr.order_id)
-                        matched = True
-                        break
+            ):
+                matched_id = curr.order_id
 
-            if not matched:
-                to_place.append(desired_order)
+            if matched_id is None:
+                best: OpenOrder | None = None
+                best_key: tuple[float, int] | None = None
+                for curr in buckets.get((want.side, want.reduce_only), ()):
+                    if curr.order_id in matched_current_ids:
+                        continue
+                    if not self._order_matches(
+                        curr, want, price_tol, size_rel_tol, size_abs_tol
+                    ):
+                        continue
+                    key = (abs(curr.price - want.price), curr.order_id)
+                    if best_key is None or key < best_key:
+                        best, best_key = curr, key
+                if best is not None:
+                    matched_id = best.order_id
 
-        # Orders on exchange with no match -> cancel
+            if matched_id is not None:
+                matched_current_ids.add(matched_id)
+            else:
+                to_place.append(want)
+
         to_cancel = [o for o in current if o.order_id not in matched_current_ids]
-
         return to_cancel, to_place
 
     # ------------------------------------------------------------------
