@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -860,6 +861,74 @@ class TestCancelAll:
         await om.cancel_all_orders("BTC-PERP")
 
         om._client.bulk_cancel.assert_not_called()
+
+
+# ===========================================================================
+# Test: dead-oid negative cache (phantom-cancel loop)
+# ===========================================================================
+
+
+class TestDeadOidCache:
+    _GONE = {
+        "status": "ok",
+        "response": {
+            "type": "cancel",
+            "data": {
+                "statuses": [
+                    {"error": "Order was never placed, already canceled, or filled. asset=3"}
+                ]
+            },
+        },
+    }
+
+    def test_is_already_gone_recognizes_hl_phrase(self):
+        assert OrderManager._is_already_gone(
+            {"error": "Order was never placed, already canceled, or filled. asset=3"}
+        )
+        assert OrderManager._is_already_gone("already cancelled")
+        # A transient failure is not "gone" and must stay retryable.
+        assert not OrderManager._is_already_gone({"error": "rate limited"})
+        assert not OrderManager._is_already_gone("success")
+
+    @pytest.mark.asyncio
+    async def test_reconcile_stops_retrying_cancel_for_oid_reported_gone(self):
+        """Once the exchange says an oid is gone, later reconciles don't re-cancel it.
+
+        The local open-orders view lags exchange truth for a cycle or two
+        after a cancel+place; without the negative cache the diff re-issues
+        the same doomed cancel every reconcile until the REST rebuild.
+        """
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_cancel.return_value = self._GONE
+
+        stale = [_open(order_id=999, client_order_id="0x" + "b" * 32, price=50000.0)]
+
+        # desired is empty -> the stale order is a pure cancel target.
+        await om.reconcile("BTC-PERP", [], list(stale), mid_price=50000.0)
+        assert om._client.bulk_cancel.call_count == 1
+        assert om._is_dead_oid(999)
+
+        # Same stale view next cycle: the cancel is suppressed entirely.
+        await om.reconcile("BTC-PERP", [], list(stale), mid_price=50000.0)
+        assert om._client.bulk_cancel.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dead_oid_entry_expires_and_cancel_is_retried(self):
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_cancel.return_value = self._GONE
+
+        stale = [_open(order_id=999, client_order_id="0x" + "b" * 32, price=50000.0)]
+
+        await om.reconcile("BTC-PERP", [], list(stale), mid_price=50000.0)
+        assert om._client.bulk_cancel.call_count == 1
+
+        # Age the entry past its TTL.
+        om._dead_oids[999] = time.monotonic() - 61.0
+
+        await om.reconcile("BTC-PERP", [], list(stale), mid_price=50000.0)
+        assert om._client.bulk_cancel.call_count == 2
 
 
 # ===========================================================================

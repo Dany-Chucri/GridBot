@@ -826,6 +826,8 @@ Every `reconcile_interval` (default: 5 seconds), the OrderManager:
 
 **Precision:** Prices are snapped to the asset's `tick_size` and sizes to its `sz_decimals` (Hyperliquid szDecimals) at the point each level is computed, not just at the exchange boundary. The HL SDK rejects any price or size whose wire encoding would lose precision, and the diff above matches desired against resting orders by price/size, so an unrounded value never compares equal to itself across cycles (vol-scaled step and size drift slightly every cycle). A level whose size rounds below one lot is dropped. See `gridbot/pricing.py`.
 
+**Stale-cancel suppression:** The local open-orders view is WS-primary and can lag exchange truth by a cycle or two right after a cancel+place. When the exchange reports a cancel target as already gone (cancelled, filled, or never rested), the OrderManager records that oid in a short-lived negative cache and omits it from subsequent cancel batches. Without this, the diff re-issues the same doomed cancel every reconcile until the periodic REST rebuild reconciles the view. Entries expire after 60s; HL oids are monotonic and never reused.
+
 ### 7.3 Deterministic Client Order IDs
 
 Every order is assigned a deterministic client order ID:

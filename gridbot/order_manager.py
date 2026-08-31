@@ -34,6 +34,11 @@ from gridbot.types import (
 
 logger = logging.getLogger(__name__)
 
+# How long a "this oid is gone" report from the exchange suppresses further
+# cancel attempts for that oid. Comfortably longer than the REST reconcile
+# interval and a WS reconnect, short enough that a stuck entry self-heals.
+_DEAD_OID_TTL_SECONDS = 60.0
+
 
 class OrderManager:
     """Manages all exchange order operations via batch API calls."""
@@ -46,6 +51,14 @@ class OrderManager:
         # ALO rejection tracking: symbol -> count in current window
         self._alo_rejection_counts: dict[str, int] = {}
         self._alo_rejection_window_start_ms: int = 0
+        # Negative cache of oids the exchange has reported as already gone
+        # (cancelled, filled, or never rested). The local open-orders view
+        # can lag WS/REST truth by a cycle or two right after a cancel+place,
+        # so without this the diff re-issues doomed cancels for the same oids
+        # every reconcile until the periodic REST rebuild catches up. Entries
+        # expire; HL oids are monotonic and never reused, so the TTL is only
+        # a memory bound.
+        self._dead_oids: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -173,6 +186,7 @@ class OrderManager:
             )
 
         to_cancel, to_place = self._compute_diff(desired, current)
+        to_cancel = self._drop_dead_oids(to_cancel)
 
         if not to_cancel and not to_place:
             return
@@ -207,6 +221,7 @@ class OrderManager:
         backstop cancel/place in the same cancel/place sequence as grid orders.
         """
         to_cancel, to_place = self._compute_diff(desired, current)
+        to_cancel = self._drop_dead_oids(to_cancel)
         pos_size = position.size if position else 0.0
         coin = self._to_coin(symbol)
 
@@ -374,6 +389,64 @@ class OrderManager:
         to_cancel = [o for o in current if o.order_id not in matched_current_ids]
 
         return to_cancel, to_place
+
+    # ------------------------------------------------------------------
+    # Dead-oid negative cache
+    # ------------------------------------------------------------------
+
+    def _record_dead_oid(self, oid: int) -> None:
+        """Remember that the exchange reports this oid as no longer on the book."""
+        self._dead_oids[oid] = time.monotonic()
+
+    def _is_dead_oid(self, oid: int) -> bool:
+        """True if this oid was recently reported gone and the entry is still fresh."""
+        ts = self._dead_oids.get(oid)
+        if ts is None:
+            return False
+        if time.monotonic() - ts > _DEAD_OID_TTL_SECONDS:
+            del self._dead_oids[oid]
+            return False
+        return True
+
+    def _drop_dead_oids(self, cancels: list[OpenOrder]) -> list[OpenOrder]:
+        """Filter out cancels for oids the exchange already reported gone.
+
+        Prevents the reconcile loop from re-issuing the same doomed cancel
+        every cycle while the local open-orders view catches up to the
+        exchange after a cancel+place.
+        """
+        # Opportunistically prune stale entries.
+        now = time.monotonic()
+        self._dead_oids = {
+            oid: ts for oid, ts in self._dead_oids.items()
+            if now - ts <= _DEAD_OID_TTL_SECONDS
+        }
+        if not self._dead_oids:
+            return cancels
+        kept = [o for o in cancels if o.order_id not in self._dead_oids]
+        dropped = len(cancels) - len(kept)
+        if dropped:
+            logger.debug(
+                "Skipping %d cancel(s) for oids already reported gone", dropped
+            )
+        return kept
+
+    @staticmethod
+    def _is_already_gone(status_entry: Any) -> bool:
+        """True if a per-cancel failure means the order no longer exists.
+
+        Distinct from a transient cancel failure (rate limit, network) which
+        should still be retried on the next cycle.
+        """
+        if isinstance(status_entry, dict):
+            text = str(status_entry.get("error", "")).lower()
+        else:
+            text = str(status_entry).lower()
+        return (
+            "never placed" in text
+            or "already canceled" in text
+            or "already cancelled" in text
+        )
 
     # ------------------------------------------------------------------
     # Batch operations
@@ -544,6 +617,8 @@ class OrderManager:
                             order.order_id,
                             s,
                         )
+                        if self._is_already_gone(s):
+                            self._record_dead_oid(order.order_id)
                 if failed:
                     logger.warning(
                         "Cancel batch: %d succeeded, %d failed", success, failed
