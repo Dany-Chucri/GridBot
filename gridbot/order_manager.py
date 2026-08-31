@@ -22,7 +22,7 @@ import time
 from typing import Any, Callable
 
 from gridbot.config import AssetConfig, BotConfig
-from gridbot.pricing import round_to_tick
+from gridbot.pricing import round_to_size, round_to_tick
 from gridbot.types import (
     DesiredOrder,
     Fill,
@@ -223,6 +223,9 @@ class OrderManager:
         else:
             direction = "long" if pos_size > 0 else "short"
             is_buy = pos_size < 0
+            backstop_sz = round_to_size(
+                abs(pos_size), self._get_asset_config(symbol).sz_decimals
+            )
             distance = (breakout_atr_distance + backstop_buffer_atr) * atr
             trigger_price = (anchor - distance) if pos_size > 0 else (anchor + distance)
             trigger_price = round_to_tick(
@@ -243,21 +246,24 @@ class OrderManager:
 
             from hyperliquid.utils.types import Cloid
 
-            extra_places.append({
-                "coin": coin,
-                "is_buy": is_buy,
-                "sz": abs(pos_size),
-                "limit_px": trigger_price,
-                "order_type": {
-                    "trigger": {
-                        "triggerPx": trigger_price,
-                        "isMarket": True,
-                        "tpsl": "sl",
-                    }
-                },
-                "reduce_only": True,
-                "cloid": Cloid.from_str(backstop_cloid),
-            })
+            # A position smaller than one lot cannot carry a valid backstop
+            # order; the stale-backstop cancels above still run.
+            if backstop_sz > 0:
+                extra_places.append({
+                    "coin": coin,
+                    "is_buy": is_buy,
+                    "sz": backstop_sz,
+                    "limit_px": trigger_price,
+                    "order_type": {
+                        "trigger": {
+                            "triggerPx": trigger_price,
+                            "isMarket": True,
+                            "tpsl": "sl",
+                        }
+                    },
+                    "reduce_only": True,
+                    "cloid": Cloid.from_str(backstop_cloid),
+                })
 
         if not to_cancel and not to_place and not extra_cancels and not extra_places:
             return
@@ -471,12 +477,12 @@ class OrderManager:
         """Build a single Hyperliquid placement request dict."""
         from hyperliquid.utils.types import Cloid
 
-        tick_size = self._get_asset_config(order.symbol).tick_size
+        asset_cfg = self._get_asset_config(order.symbol)
         req: dict[str, Any] = {
             "coin": self._to_coin(order.symbol),
             "is_buy": order.side == OrderSide.BUY,
-            "sz": order.size,
-            "limit_px": round_to_tick(order.price, tick_size),
+            "sz": round_to_size(order.size, asset_cfg.sz_decimals),
+            "limit_px": round_to_tick(order.price, asset_cfg.tick_size),
             "order_type": self._build_order_type(order),
             "reduce_only": order.reduce_only,
         }
@@ -910,11 +916,18 @@ class OrderManager:
         await self._cancel_existing_backstop(symbol, expected_cloid=backstop_cloid)
         await self._cancel_existing_backstop(symbol, expected_cloid=other_cloid)
 
+        backstop_sz = round_to_size(
+            abs(pos_size), self._get_asset_config(symbol).sz_decimals
+        )
+        if backstop_sz <= 0:
+            # Sub-lot residual position: nothing valid to protect.
+            return
+
         # Place new backstop trigger order
         order_req = {
             "coin": coin,
             "is_buy": is_buy,
-            "sz": abs(pos_size),
+            "sz": backstop_sz,
             "limit_px": trigger_price,
             "order_type": {
                 "trigger": {
@@ -1141,7 +1154,13 @@ class OrderManager:
         """
         loop = asyncio.get_running_loop()
         coin = self._to_coin(symbol)
-        limit_price = round_to_tick(limit_price, self._get_asset_config(symbol).tick_size)
+        asset_cfg = self._get_asset_config(symbol)
+        limit_price = round_to_tick(limit_price, asset_cfg.tick_size)
+        size = round_to_size(size, asset_cfg.sz_decimals)
+        if size <= 0:
+            # Residual below one lot: the exchange would reject it and the
+            # flatten loop's dead-state check handles the leftover dust.
+            return
 
         order_req = {
             "coin": coin,

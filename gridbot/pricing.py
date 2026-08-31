@@ -24,3 +24,19 @@ def round_to_tick(price: float, tick_size: float) -> float:
         Decimal("1"), rounding=ROUND_HALF_EVEN
     )
     return float(ticks * Decimal(str(tick_size)))
+
+
+def round_to_size(size: float, size_decimals: int) -> float:
+    """Round an order size to the asset's supported decimal precision.
+
+    Hyperliquid's wire encoder rejects any size that would lose precision
+    (float_to_wire raises), so vol-scaled and inventory-skewed sizes have to
+    be snapped to szDecimals before they reach order identity (the reconcile
+    diff matches desired against resting orders by size) or the exchange. A
+    full-size level happens to be clean; a skewed or partial-position size is
+    an arbitrary-precision float that would otherwise fail the whole batch.
+    """
+    if size_decimals < 0:
+        return size
+    quantum = Decimal(1).scaleb(-size_decimals)
+    return float(Decimal(str(size)).quantize(quantum, rounding=ROUND_HALF_EVEN))

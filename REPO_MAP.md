@@ -36,6 +36,7 @@
 - `market_data.py`: WS/REST market data, fills, vol metrics
 - `order_manager.py`: Batch order ops, reconciliation, flatten protocol, backstop
 - `pnl_monitor.py`: PnL tracking, funding, exchange cross-check
+- `pricing.py`: Shared price-to-tick and size-to-szDecimals rounding
 - `risk_manager.py`: Risk constraints, regime detection, pre-flight checks
 - `state_store.py`: SQLite persistence for crash recovery
 - `supervisor.py`: Main event loop, module orchestration, shutdown
@@ -52,6 +53,7 @@
 - `test_market_data.py`: Full MarketData test suite (102 tests, 72% coverage)
 - `test_order_manager.py`: Full OrderManager test suite (117 tests)
 - `test_pnl_monitor.py`: Full PnLMonitor test suite (28 tests, 100% coverage)
+- `test_pricing.py`: Price-to-tick and size-to-szDecimals rounding tests
 - `test_risk_manager.py`: Full RiskManager test suite (75 tests, 96% coverage)
 - `test_state_store.py`: Full StateStore test suite (52 tests, 96% coverage)
 - `test_supervisor.py`: Supervisor orchestration suite (66 tests, mocked modules)

@@ -19,7 +19,7 @@ import hashlib
 import logging
 
 from gridbot.config import AssetConfig, OperationalConfig
-from gridbot.pricing import round_to_tick
+from gridbot.pricing import round_to_size, round_to_tick
 from gridbot.types import (
     AssetState,
     DesiredOrder,
@@ -121,6 +121,13 @@ class GridEngine:
         )
         desired: list[DesiredOrder] = []
         for level in all_levels:
+            # Snap size to szDecimals here so it is stable across cycles for
+            # the reconcile diff and valid at the exchange wire encoder. Vol
+            # scaling and inventory skew both produce arbitrary-precision
+            # floats; a level that rounds away to zero is dropped.
+            size = round_to_size(level.size, self._config.sz_decimals)
+            if size <= 0:
+                continue
             cid = self.make_client_order_id(
                 state.symbol, level.price, level.side, config_hash,
                 grid_config.epoch,
@@ -129,7 +136,7 @@ class GridEngine:
                 client_order_id=cid,
                 symbol=state.symbol,
                 price=level.price,
-                size=level.size,
+                size=size,
                 side=level.side,
                 time_in_force=TimeInForce.ALO,
                 reduce_only=level.reduce_only,

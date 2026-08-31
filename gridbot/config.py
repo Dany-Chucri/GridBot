@@ -84,6 +84,7 @@ class AssetConfig:
     # Order execution
     post_only_max_retries: int = 3
     tick_size: float = 1.0  # USD, per-asset tick size for ALO price nudging
+    sz_decimals: int = 5  # Hyperliquid szDecimals; order sizes snap to this
 
     # Dynamic slippage (section 5.7)
     base_slippage_bps: float = 1.5
@@ -113,6 +114,7 @@ def default_eth_config() -> AssetConfig:
         breakout_atr_distance=4.0,
         max_flatten_slippage_bps=75.0,
         tick_size=0.01,
+        sz_decimals=4,
     )
 
 

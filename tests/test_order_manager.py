@@ -748,6 +748,30 @@ class TestBatchSubmission:
         assert captured_args[0]["limit_px"] == 78573.0
 
     @pytest.mark.asyncio
+    async def test_submit_batch_rounds_size_to_sz_decimals(self):
+        """Placement sizes are snapped to szDecimals before hitting the SDK.
+
+        Vol scaling and inventory skew produce arbitrary-precision sizes
+        (e.g. an increasing-side buy shrunk near the soft cap) that the SDK's
+        float_to_wire rejects, failing the whole batch. A full-size level is
+        already clean, so this only bites once skew is active.
+        """
+        om = _om()
+        om._client = MagicMock()
+        captured_args = []
+
+        def mock_place(reqs):
+            captured_args.extend(reqs)
+            return {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}}}
+
+        om._client.bulk_orders = mock_place
+
+        order = _desired(symbol="BTC-PERP", size=0.00015597843404667523)
+        await om._submit_batch([], [order])
+
+        assert captured_args[0]["sz"] == 0.00016
+
+    @pytest.mark.asyncio
     async def test_submit_batch_builds_correct_order_request(self):
         """Placement request has correct format for Hyperliquid SDK."""
         om = _om()

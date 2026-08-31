@@ -824,6 +824,8 @@ Every `reconcile_interval` (default: 5 seconds), the OrderManager:
 
 **Why minimal diff matters:** Re-placing an order that's already resting at the correct price/size wastes an API call, resets the order's queue priority, and risks a brief window without coverage at that level. Only touch orders that actually need to change.
 
+**Precision:** Prices are snapped to the asset's `tick_size` and sizes to its `sz_decimals` (Hyperliquid szDecimals) at the point each level is computed, not just at the exchange boundary. The HL SDK rejects any price or size whose wire encoding would lose precision, and the diff above matches desired against resting orders by price/size, so an unrounded value never compares equal to itself across cycles (vol-scaled step and size drift slightly every cycle). A level whose size rounds below one lot is dropped. See `gridbot/pricing.py`.
+
 ### 7.3 Deterministic Client Order IDs
 
 Every order is assigned a deterministic client order ID:
