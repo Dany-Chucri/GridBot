@@ -1116,6 +1116,28 @@ class TestRestReconciliation:
         assert state.open_orders == [rest_order]
 
     @pytest.mark.asyncio
+    async def test_clears_phantom_duplicate_cloid(self):
+        """Local view holds a live order plus a cancelled phantom under the
+        same deterministic cloid. Cloid-set comparison misses it; the oid
+        comparison adopts REST truth and drops the phantom."""
+        symbol = "BTC-PERP"
+        live = OpenOrder(
+            order_id=1, client_order_id="0xdup", symbol=symbol,
+            price=49000.0, size=0.1, remaining=0.1, side=OrderSide.BUY,
+        )
+        phantom = OpenOrder(
+            order_id=2, client_order_id="0xdup", symbol=symbol,
+            price=49000.0, size=0.1, remaining=0.1, side=OrderSide.BUY,
+        )
+        md = _mock_market_data()
+        md.fetch_open_orders = AsyncMock(return_value=[live])
+        sup = _make_supervisor(market_data=md)
+        sup._asset_states[symbol].open_orders = [live, phantom]
+
+        await sup._rest_reconciliation(symbol)
+        assert sup._asset_states[symbol].open_orders == [live]
+
+    @pytest.mark.asyncio
     async def test_adopts_exchange_position(self):
         symbol = "BTC-PERP"
         rest_pos = Position(

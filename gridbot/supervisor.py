@@ -996,12 +996,19 @@ class Supervisor:
 
         state = self._asset_states[symbol]
 
-        local_cloids = {o.client_order_id for o in state.open_orders}
-        rest_cloids = {o.client_order_id for o in rest_orders}
-        if local_cloids != rest_cloids:
+        # Compare by exchange oid, not cloid: cloids are deterministic
+        # (section 7.3) so two orders can share one, which is exactly the
+        # state a stale local view gets stuck in (a live order plus a
+        # cancelled phantom under the same cloid). A cloid-set comparison
+        # reads that as "no divergence" and never clears the phantom, so it
+        # loops in the cancel diff forever. Exchange is truth: adopt the
+        # REST oid set whenever it differs.
+        local_oids = {o.order_id for o in state.open_orders}
+        rest_oids = {o.order_id for o in rest_orders}
+        if local_oids != rest_oids:
             logger.warning(
                 "REST/WS order divergence for %s: local=%d rest=%d, adopting exchange",
-                symbol, len(local_cloids), len(rest_cloids),
+                symbol, len(local_oids), len(rest_oids),
             )
             # Design section 10.3: "Reconcile discrepancy detected" is a
             # High-severity alert, not just a log line, the operator needs
@@ -1010,8 +1017,8 @@ class Supervisor:
             # the existing convention used for breakout-flatten alerts below.
             await self._send_alert(
                 "WARNING",
-                f"REST/WS order divergence for {symbol}: local={len(local_cloids)} "
-                f"rest={len(rest_cloids)}, adopted exchange state",
+                f"REST/WS order divergence for {symbol}: local={len(local_oids)} "
+                f"rest={len(rest_oids)}, adopted exchange state",
             )
             state.open_orders = rest_orders
 
