@@ -531,6 +531,65 @@ class TestOrderUpdateHandling:
         assert md._tracked_orders[10]["remaining_sz"] == 1.0
 
     @pytest.mark.asyncio
+    async def test_open_adds_to_open_orders_view(self, md: MarketData):
+        await md._handle_order_update(
+            self._make_update(oid=10, status="open", sz="1.0", orig_sz="1.0",
+                              cloid="0xabc")
+        )
+        orders = await md.get_open_orders("BTC-PERP")
+        assert [o.order_id for o in orders] == [10]
+        assert orders[0].client_order_id == "0xabc"
+        assert orders[0].remaining == 1.0
+
+    @pytest.mark.asyncio
+    async def test_fill_removes_from_open_orders_view(self, md: MarketData):
+        await md._handle_order_update(self._make_update(oid=10, status="open"))
+        await md._handle_order_update(
+            self._make_update(oid=10, status="filled", sz="0.0", orig_sz="1.0")
+        )
+        assert await md.get_open_orders("BTC-PERP") == []
+
+    @pytest.mark.asyncio
+    async def test_cancel_removes_from_open_orders_view(self, md: MarketData):
+        await md._handle_order_update(self._make_update(oid=10, status="open"))
+        await md._handle_order_update(self._make_update(oid=10, status="canceled"))
+        assert await md.get_open_orders("BTC-PERP") == []
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_updates_remaining_in_view(self, md: MarketData):
+        await md._handle_order_update(
+            self._make_update(oid=10, status="open", sz="1.0", orig_sz="1.0")
+        )
+        await md._handle_order_update(
+            self._make_update(oid=10, status="open", sz="0.4", orig_sz="1.0")
+        )
+        orders = await md.get_open_orders("BTC-PERP")
+        assert orders[0].remaining == pytest.approx(0.4)
+
+    @pytest.mark.asyncio
+    async def test_get_open_orders_returns_copies(self, md: MarketData):
+        await md._handle_order_update(
+            self._make_update(oid=10, status="open", sz="1.0", orig_sz="1.0")
+        )
+        snap = await md.get_open_orders("BTC-PERP")
+        # A later WS mutation must not change the earlier snapshot.
+        await md._handle_order_update(
+            self._make_update(oid=10, status="open", sz="0.4", orig_sz="1.0")
+        )
+        assert snap[0].remaining == 1.0
+
+    @pytest.mark.asyncio
+    async def test_set_open_orders_rebases_view(self, md: MarketData):
+        await md._handle_order_update(self._make_update(oid=10, status="open"))
+        rest = OpenOrder(
+            order_id=20, client_order_id="0xdef", symbol="BTC-PERP",
+            price=60000.0, size=1.0, remaining=1.0, side=OrderSide.BUY,
+        )
+        await md.set_open_orders("BTC-PERP", [rest])
+        orders = await md.get_open_orders("BTC-PERP")
+        assert [o.order_id for o in orders] == [20]
+
+    @pytest.mark.asyncio
     async def test_full_fill_returns_fill(self, md: MarketData):
         # First track the order
         await md._handle_order_update(

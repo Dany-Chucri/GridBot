@@ -90,7 +90,12 @@ def _make_market_data(exchange: FakeExchange) -> MagicMock:
     async def _fetch_depth(symbol: str, depth_bps: float = 50.0, side=None) -> float:
         return 20.0
 
+    async def _get_open_orders(symbol: str) -> list[OpenOrder]:
+        return exchange.list_orders(symbol)
+
     md.fetch_open_orders = AsyncMock(side_effect=_fetch_orders)
+    md.get_open_orders = AsyncMock(side_effect=_get_open_orders)
+    md.set_open_orders = AsyncMock()
     md.fetch_position = AsyncMock(side_effect=_fetch_position)
     md.fetch_fills = AsyncMock(return_value=[])
     md.fetch_account_equity = AsyncMock(side_effect=_fetch_equity)

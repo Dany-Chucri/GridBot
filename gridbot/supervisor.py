@@ -247,6 +247,7 @@ class Supervisor:
                 if o.client_order_id and o.client_order_id not in exchange_cloids
             ]
 
+            await self._market_data.set_open_orders(symbol, exchange_orders)
             state.open_orders = exchange_orders
             state.position = exchange_position
 
@@ -440,6 +441,9 @@ class Supervisor:
         state.mark_price = self._market_data.get_mark_price(symbol)
         state.funding_rate = self._market_data.get_funding_rate(symbol)
         state.moving_avg = self._market_data.get_moving_average(symbol)
+        # Open-orders view is WS-primary (design §4.3): MarketData maintains
+        # it from orderUpdates; REST reconciliation (step 9) corrects drift.
+        state.open_orders = await self._market_data.get_open_orders(symbol)
 
         # 3. Regime detection + risk evaluation
         state.regime = self._risk_manager.detect_regime(
@@ -827,7 +831,7 @@ class Supervisor:
         if action == RiskAction.CANCEL_AND_FLATTEN:
             await self._send_alert("WARNING", f"Cancel+flatten for {symbol}: {reason}")
             await self._order_manager.cancel_all_orders(symbol)
-            state.open_orders = []
+            await self._clear_orders_and_flips(symbol, state)
             if state.position is not None and abs(state.position.size) > 0:
                 state.bot_state = BotState.FLATTENING
                 await self._state_store.save_bot_state(symbol, state)
@@ -868,7 +872,7 @@ class Supervisor:
         if action == RiskAction.KILL:
             await self._send_alert("CRITICAL", f"KILL switch fired for {symbol}: {reason}")
             await self._order_manager.cancel_all_orders(symbol)
-            state.open_orders = []
+            await self._clear_orders_and_flips(symbol, state)
             if state.position is not None and abs(state.position.size) > 0:
                 state.bot_state = BotState.FLATTENING
                 await self._state_store.save_bot_state(symbol, state)
@@ -878,6 +882,21 @@ class Supervisor:
             return True
 
         return False
+
+    async def _clear_orders_and_flips(self, symbol: str, state: AssetState) -> None:
+        """Drop all local order state after a cancel-all + flatten.
+
+        The grid orders are cancelled and the position is about to be
+        force-closed, so any pending flips (section 7.6: "removed when the
+        underlying position is unwound by ... breakout flatten") are now
+        orphans. Leaving them would re-place naked orders on the next RANGE
+        cycle that, if filled, open an unintended position.
+        """
+        state.open_orders = []
+        await self._market_data.set_open_orders(symbol, [])
+        if state.pending_flips:
+            state.pending_flips = []
+            await self._state_store.save_pending_flips(symbol, [])
 
     async def _maintain_anchor(
         self,
@@ -1003,7 +1022,8 @@ class Supervisor:
         # reads that as "no divergence" and never clears the phantom, so it
         # loops in the cancel diff forever. Exchange is truth: adopt the
         # REST oid set whenever it differs.
-        local_oids = {o.order_id for o in state.open_orders}
+        ws_orders = await self._market_data.get_open_orders(symbol)
+        local_oids = {o.order_id for o in ws_orders}
         rest_oids = {o.order_id for o in rest_orders}
         if local_oids != rest_oids:
             logger.warning(
@@ -1020,7 +1040,10 @@ class Supervisor:
                 f"REST/WS order divergence for {symbol}: local={len(local_oids)} "
                 f"rest={len(rest_oids)}, adopted exchange state",
             )
+            await self._market_data.set_open_orders(symbol, rest_orders)
             state.open_orders = rest_orders
+        else:
+            state.open_orders = ws_orders
 
         # Position reconciliation
         local_size = state.position.size if state.position else 0.0

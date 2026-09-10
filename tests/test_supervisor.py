@@ -68,6 +68,8 @@ def _mock_market_data(mid: float = 50000.0) -> MagicMock:
     md.disconnect = AsyncMock()
     md.fetch_account_equity = AsyncMock(return_value=100_000.0)
     md.fetch_open_orders = AsyncMock(return_value=[])
+    md.get_open_orders = AsyncMock(return_value=[])
+    md.set_open_orders = AsyncMock()
     md.fetch_position = AsyncMock(return_value=None)
     md.fetch_fills = AsyncMock(return_value=[])
     md.fetch_exchange_pnl = AsyncMock(return_value=0.0)
@@ -983,6 +985,10 @@ class TestRiskActions:
             symbol=symbol, anchor=79435.5, range_atr=2.5, step_bps=20.0, epoch=3,
         )
         state.anchor_epoch = 3
+        state.pending_flips = [
+            PendingFlip(price=79500.0, side=OrderSide.SELL, size=0.5,
+                        originating_fill_id="f1"),
+        ]
 
         await sup._handle_risk_action(
             symbol,
@@ -1004,6 +1010,9 @@ class TestRiskActions:
         assert state.grid_config is None
         assert state.anchor_epoch == 4
         ss.delete_grid_config.assert_awaited_once_with(symbol)
+        # The flattened position's pending flips are orphans now (section 7.6).
+        assert state.pending_flips == []
+        sup._market_data.set_open_orders.assert_awaited_with(symbol, [])
 
     @pytest.mark.asyncio
     async def test_cancel_and_flatten_does_not_set_breakout_for_non_breakout(self):
@@ -1116,6 +1125,22 @@ class TestRestReconciliation:
         assert state.open_orders == [rest_order]
 
     @pytest.mark.asyncio
+    async def test_cycle_populates_open_orders_from_ws_view(self):
+        symbol = "BTC-PERP"
+        ws_order = OpenOrder(
+            order_id=7, client_order_id="0xws", symbol=symbol,
+            price=49000.0, size=0.1, remaining=0.1, side=OrderSide.BUY,
+        )
+        md = _mock_market_data()
+        md.get_open_orders = AsyncMock(return_value=[ws_order])
+        md.fetch_open_orders = AsyncMock(return_value=[ws_order])  # REST agrees
+        sup = _make_supervisor(market_data=md)
+        asset_cfg = sup._config.assets[0]
+
+        await sup._run_cycle(symbol, asset_cfg)
+        assert sup._asset_states[symbol].open_orders == [ws_order]
+
+    @pytest.mark.asyncio
     async def test_clears_phantom_duplicate_cloid(self):
         """Local view holds a live order plus a cancelled phantom under the
         same deterministic cloid. Cloid-set comparison misses it; the oid
@@ -1131,10 +1156,11 @@ class TestRestReconciliation:
         )
         md = _mock_market_data()
         md.fetch_open_orders = AsyncMock(return_value=[live])
+        md.get_open_orders = AsyncMock(return_value=[live, phantom])  # WS view stuck
         sup = _make_supervisor(market_data=md)
-        sup._asset_states[symbol].open_orders = [live, phantom]
 
         await sup._rest_reconciliation(symbol)
+        md.set_open_orders.assert_awaited_with(symbol, [live])
         assert sup._asset_states[symbol].open_orders == [live]
 
     @pytest.mark.asyncio

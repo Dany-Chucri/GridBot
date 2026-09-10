@@ -19,6 +19,7 @@ import logging
 import math
 import time
 from collections import deque
+from dataclasses import replace
 from functools import partial
 from typing import Any
 
@@ -113,6 +114,16 @@ class MarketData:
 
         # Order tracking for fill detection from orderUpdates
         self._tracked_orders: dict[int, dict] = {}
+
+        # Authoritative open-orders view (design section 4.3, WS-primary).
+        # symbol -> {oid: OpenOrder}. Maintained by the orderUpdates handler
+        # (add on "open", drop on fill/cancel/reject, adjust remaining on
+        # partial) and re-based from REST truth via set_open_orders. All
+        # mutations go through self._lock, which serialises the WS processor
+        # task against the Supervisor's REST reconciliation.
+        self._open_orders: dict[str, dict[int, OpenOrder]] = {
+            ac.symbol: {} for ac in config.assets
+        }
 
         # Coin ↔ symbol mapping
         self._coin_to_symbol: dict[str, str] = {}
@@ -500,6 +511,7 @@ class MarketData:
 
             if status == "filled":
                 tracked = self._tracked_orders.pop(oid, None)
+                self._open_orders.get(symbol, {}).pop(oid, None)
                 fill_size = tracked["remaining_sz"] if tracked else orig_sz
                 if tracked:
                     is_maker = tracked["is_maker"]
@@ -520,6 +532,16 @@ class MarketData:
                 )
 
             if status == "open":
+                self._open_orders.setdefault(symbol, {})[oid] = OpenOrder(
+                    order_id=oid,
+                    client_order_id=cloid,
+                    symbol=symbol,
+                    price=limit_px,
+                    size=orig_sz or remaining_sz,
+                    remaining=remaining_sz,
+                    side=side,
+                    reduce_only=bool(order.get("reduceOnly", False)),
+                )
                 tracked = self._tracked_orders.get(oid)
                 if tracked is None:
                     self._tracked_orders[oid] = {
@@ -558,9 +580,32 @@ class MarketData:
 
             if status in ("canceled", "marginCanceled", "rejected"):
                 self._tracked_orders.pop(oid, None)
+                self._open_orders.get(symbol, {}).pop(oid, None)
                 return None
 
             return None
+
+    # ------------------------------------------------------------------
+    # Open-orders view (WS-primary, design section 4.3)
+    # ------------------------------------------------------------------
+
+    async def get_open_orders(self, symbol: str) -> list[OpenOrder]:
+        """Snapshot of the WS-maintained open-orders view for `symbol`.
+
+        Returns copies so a later WS mutation (e.g. `remaining` on a
+        partial fill) can't retroactively change a caller's snapshot.
+        """
+        async with self._lock:
+            return [
+                replace(o) for o in self._open_orders.get(symbol, {}).values()
+            ]
+
+    async def set_open_orders(self, symbol: str, orders: list[OpenOrder]) -> None:
+        """Re-base the open-orders view for `symbol` from an authoritative
+        source (REST reconciliation, restart recovery, post-flatten reset).
+        """
+        async with self._lock:
+            self._open_orders[symbol] = {o.order_id: replace(o) for o in orders}
 
     # ------------------------------------------------------------------
     # REST backup path (section 4.3)

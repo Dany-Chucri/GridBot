@@ -33,7 +33,7 @@
 - `config.py`: Configuration loading, parameter dataclasses, per-asset min-lot lookup
 - `grid_engine.py`: Pure calculation: grid levels, spacing, sizing, anchor logic
 - `main.py`: CLI entry point, argument parsing, signal handling
-- `market_data.py`: WS/REST market data, fills, vol metrics
+- `market_data.py`: WS/REST market data, fills, vol metrics, authoritative open-orders view
 - `order_manager.py`: Batch order ops, reconciliation, flatten protocol, backstop
 - `pnl_monitor.py`: PnL tracking, funding, exchange cross-check
 - `pricing.py`: Shared price-to-tick and size-to-szDecimals rounding
