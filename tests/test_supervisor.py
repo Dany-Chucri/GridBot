@@ -154,11 +154,12 @@ def _fill(
     size: float = 0.1,
     side: OrderSide = OrderSide.BUY,
     is_partial: bool = False,
+    client_order_id: str = "cloid",
 ) -> Fill:
     return Fill(
         fill_id=f"f-{price}-{side.value}",
         order_id=1,
-        client_order_id="cloid",
+        client_order_id=client_order_id,
         symbol=symbol,
         price=price,
         size=size,
@@ -1252,6 +1253,51 @@ class TestFillRouting:
         sup = _make_supervisor(pnl_monitor=pm)
         await sup._route_fill(_fill(symbol="UNKNOWN-PERP"))
         pm.record_fill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fill_on_flip_cloid_removes_pending_flip_without_chaining(self):
+        """A fill on a flip order's own cloid closes it out: drop the
+        pending flip, book PnL, do not create a counter-flip (section 7.6)."""
+        from gridbot.types import PendingFlip, flip_client_order_id
+
+        om = _mock_order_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(order_manager=om, state_store=ss)
+        symbol = sup._config.assets[0].symbol
+        state = sup._asset_states[symbol]
+        state.grid_config = GridConfig(
+            symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        pf = PendingFlip(price=50100.0, side=OrderSide.SELL, size=0.1,
+                         originating_fill_id="orig-1")
+        state.pending_flips = [pf]
+        cloid = flip_client_order_id("orig-1", symbol, OrderSide.SELL)
+
+        await sup._route_fill(_fill(side=OrderSide.SELL, client_order_id=cloid))
+
+        assert state.pending_flips == []
+        om.compute_flip_order.assert_not_called()
+        ss.save_pending_flips.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recovery_prunes_orphaned_pending_flips_when_flat(self):
+        from gridbot.types import PendingFlip
+
+        ss = _mock_state_store()
+        ss.load_pending_flips = AsyncMock(return_value=[
+            PendingFlip(price=81034.77, side=OrderSide.BUY, size=0.001,
+                        originating_fill_id="old-a"),
+            PendingFlip(price=78143.18, side=OrderSide.BUY, size=0.001,
+                        originating_fill_id="old-b"),
+        ])
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=None)  # flat on exchange
+        sup = _make_supervisor(market_data=md, state_store=ss)
+
+        await sup._recover_state()
+
+        symbol = sup._config.assets[0].symbol
+        assert sup._asset_states[symbol].pending_flips == []
 
 
 # ---------------------------------------------------------------------------

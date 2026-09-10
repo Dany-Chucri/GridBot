@@ -604,14 +604,11 @@ class GridEngine:
             if inventory_zone == InventoryZone.HARD_CAP and flip.side == increasing_side:
                 reduce_only = True
 
-            # Must match OrderManager.compute_flip_order's cloid scheme exactly
-            # (not make_client_order_id's grid-level scheme) since that is the
-            # ID the flip order was actually placed with on the exchange, and
-            # it must stay stable across re-anchoring (section 7.6), it is
-            # deliberately independent of grid_config_hash/epoch.
-            flip_id_raw = f"flip|{flip.originating_fill_id}|{grid_config.symbol}|{flip.side.value}"
-            digest = hashlib.sha256(flip_id_raw.encode()).hexdigest()
-            cid = f"0x{digest[:32]}"
+            # Flip-order cloid scheme (section 7.6): keyed on the originating
+            # fill, independent of grid_config_hash/epoch, so the id the flip
+            # was placed with survives re-anchoring. Shared with OrderManager
+            # and Supervisor through types.flip_client_order_id.
+            cid = flip.client_order_id(grid_config.symbol)
 
             result.append(DesiredOrder(
                 client_order_id=cid,

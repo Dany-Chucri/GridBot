@@ -41,6 +41,7 @@ from gridbot.types import (
     BotState,
     Fill,
     InventoryZone,
+    OrderSide,
     PendingFlip,
     Position,
     Regime,
@@ -276,6 +277,20 @@ class Supervisor:
                         is_partial=False,
                     )
                     await self._route_fill(missed_fill)
+
+            # Prune pending flips the exchange-confirmed position no longer
+            # backs (their underlying position was unwound while the bot was
+            # down). Without this, a flip from a long-gone position is
+            # re-placed every cycle forever, and if price has since crossed
+            # it, every placement is a Post-Only rejection.
+            orphaned = self._prune_orphaned_pending_flips(state)
+            if orphaned:
+                logger.warning(
+                    "Dropped %d orphaned pending flip(s) for %s (position=%.6f)",
+                    len(orphaned), symbol,
+                    state.position.size if state.position else 0.0,
+                )
+                await self._state_store.save_pending_flips(symbol, state.pending_flips)
 
             # 4. Resume FLATTENING if persisted and position remains
             if state.bot_state == BotState.FLATTENING:
@@ -1125,7 +1140,19 @@ class Supervisor:
         await self._state_store.record_fill(fill)
 
         # Only flip on full fills
-        if fill.is_partial or state.grid_config is None:
+        if fill.is_partial:
+            return
+
+        # A fill on a flip order's own cloid closes that flip out (profit
+        # taken / position unwound). Drop the pending flip, and do NOT chain
+        # a counter-flip: the originating grid level is re-placed by normal
+        # reconciliation (section 7.6 lifecycle: "removed when the flip
+        # order itself fills").
+        if fill.client_order_id and self._remove_pending_flip(state, fill.client_order_id):
+            await self._state_store.save_pending_flips(symbol, state.pending_flips)
+            return
+
+        if state.grid_config is None:
             return
 
         position_size = state.position.size if state.position else 0.0
@@ -1148,6 +1175,46 @@ class Supervisor:
             )
         )
         await self._state_store.save_pending_flips(symbol, state.pending_flips)
+
+    @staticmethod
+    def _remove_pending_flip(state: AssetState, cloid: str) -> bool:
+        """Drop the pending flip whose resting order carries `cloid`.
+
+        Returns True if one was removed.
+        """
+        before = len(state.pending_flips)
+        state.pending_flips = [
+            pf for pf in state.pending_flips
+            if pf.client_order_id(state.symbol) != cloid
+        ]
+        return len(state.pending_flips) < before
+
+    @staticmethod
+    def _prune_orphaned_pending_flips(state: AssetState) -> list[PendingFlip]:
+        """Drop pending flips the exchange-confirmed position can't back.
+
+        A flip reduces exposure on one side (a BUY flip unwinds a short, a
+        SELL flip unwinds a long). On recovery the position is re-read from
+        the exchange (section 4.4); any flip whose reducing direction has no
+        remaining inventory behind it is an orphan, its underlying position
+        was unwound while the bot was down (section 7.6). Kept flips are
+        capped in aggregate size at the confirmed position. Returns the
+        removed flips (for logging).
+        """
+        pos = state.position.size if state.position else 0.0
+        kept: list[PendingFlip] = []
+        removed: list[PendingFlip] = []
+        # A long position is unwound by SELL flips; a short by BUY flips.
+        reducing_side = OrderSide.SELL if pos > 0 else OrderSide.BUY
+        budget = abs(pos)
+        for pf in state.pending_flips:
+            if pf.side == reducing_side and pf.size <= budget + 1e-12:
+                kept.append(pf)
+                budget -= pf.size
+            else:
+                removed.append(pf)
+        state.pending_flips = kept
+        return removed
 
     # ------------------------------------------------------------------
     # Helpers

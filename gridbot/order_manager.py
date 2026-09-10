@@ -30,6 +30,7 @@ from gridbot.types import (
     OrderSide,
     Position,
     TimeInForce,
+    flip_client_order_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -959,10 +960,7 @@ class OrderManager:
             flip_side = OrderSide.BUY
             flip_price = fill.price * (1 - step_bps / 10_000)
 
-        # Generate deterministic flip order ID
-        flip_id_raw = f"flip|{fill.fill_id}|{fill.symbol}|{flip_side.value}"
-        digest = hashlib.sha256(flip_id_raw.encode()).hexdigest()
-        flip_cloid = f"0x{digest[:32]}"
+        flip_cloid = flip_client_order_id(fill.fill_id, fill.symbol, flip_side)
 
         return DesiredOrder(
             client_order_id=flip_cloid,

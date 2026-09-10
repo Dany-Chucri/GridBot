@@ -40,7 +40,7 @@
 - `risk_manager.py`: Risk constraints, regime detection, pre-flight checks
 - `state_store.py`: SQLite persistence for crash recovery
 - `supervisor.py`: Main event loop, module orchestration, shutdown
-- `types.py`: Shared enums, dataclasses, type definitions
+- `types.py`: Shared enums, dataclasses, type definitions, flip-order cloid helper
 
 ## scripts/
 - `post_soak_analysis.py`: Post-soak SQLite report generator (see docs/testnet-soak.md)

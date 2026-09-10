@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Awaitable, Callable
@@ -130,6 +131,24 @@ class PendingFlip:
     side: OrderSide
     size: float
     originating_fill_id: str
+
+    def client_order_id(self, symbol: str) -> str:
+        """Cloid of the resting order for this pending flip."""
+        return flip_client_order_id(self.originating_fill_id, symbol, self.side)
+
+
+def flip_client_order_id(
+    originating_fill_id: str, symbol: str, flip_side: OrderSide
+) -> str:
+    """Deterministic client order ID for a flip order (section 7.6).
+
+    Keyed on the originating fill, not grid config or epoch, so a flip
+    order keeps its identity across re-anchoring. Both OrderManager (when
+    placing) and Supervisor (matching a fill back to its pending flip, and
+    pruning orphaned flips) derive the id through this one function.
+    """
+    raw = f"flip|{originating_fill_id}|{symbol}|{flip_side.value}"
+    return f"0x{hashlib.sha256(raw.encode()).hexdigest()[:32]}"
 
 
 @dataclass
