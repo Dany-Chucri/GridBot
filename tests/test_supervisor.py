@@ -113,6 +113,7 @@ def _mock_risk_manager(
     rm.preflight_check = MagicMock(return_value=[])
     rm.record_equity = MagicMock()
     rm.record_vol = MagicMock()
+    rm.get_baseline_vol = MagicMock(return_value=0.5)
     rm.load_vol_history = MagicMock()
     rm.record_error = MagicMock()
     rm.record_desync = MagicMock()

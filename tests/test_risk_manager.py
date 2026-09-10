@@ -1021,6 +1021,44 @@ class TestPreflightChecks:
         rm.preflight_check(cfg, 100000.0)
         assert cfg.max_abs_position == 1.0
 
+    def test_grid_infeasible_when_min_lot_x_levels_exceeds_cap(self):
+        # Small account: derived max_abs_position can't fit levels_per_side
+        # min lots. exposure_frac = 0.10 * 1.0 * 0.60 * 2.0 = 0.12;
+        # max_abs_position = 0.12 * 1020 / 77000 = 0.00159; 25 * 0.001 = 0.025.
+        rm = _rm()
+        cfg = _cfg(
+            leverage=2.0, levels_per_side=25, capital_allocation=0.60,
+            max_daily_drawdown_pct=0.50,
+        )
+        violations = rm.preflight_check(cfg, 1020.0, mid_price=77000.0)
+        assert any("grid infeasible" in v for v in violations)
+
+    def test_grid_feasible_with_adequate_equity(self):
+        # exposure_frac = 0.10 * 0.60 * 0.60 * 2.0 = 0.072;
+        # max_abs_position = 0.072 * 50000 / 77000 = 0.0468; 4 * 0.001 = 0.004.
+        rm = _rm()
+        cfg = _cfg(
+            leverage=2.0, levels_per_side=4, capital_allocation=0.60,
+            max_daily_drawdown_pct=0.50,
+        )
+        violations = rm.preflight_check(cfg, 50000.0, mid_price=77000.0)
+        assert not any("grid infeasible" in v for v in violations)
+
+
+class TestBaselineVol:
+    def test_none_until_enough_samples(self):
+        rm = _rm()
+        for i in range(10):
+            rm.record_vol("BTC-PERP", i * 60_000, 0.40)
+        assert rm.get_baseline_vol("BTC-PERP") == 0.0
+
+    def test_median_of_history(self):
+        rm = _rm()
+        for i in range(25):
+            rm.record_vol("BTC-PERP", i * 60_000, 0.20 + 0.02 * i)
+        # values 0.20..0.68, median is the 13th (index 12) = 0.44
+        assert rm.get_baseline_vol("BTC-PERP") == pytest.approx(0.44)
+
 
 # ---------------------------------------------------------------------------
 # TestFlattenabilityConstraint

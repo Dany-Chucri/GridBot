@@ -44,8 +44,10 @@ _DEFAULT_ROLLING_RETURN = 0.0
 # built only from trade ticks; a sparse minute (few trades, all near the
 # same price) collapses true range toward zero, which would make the
 # breakout-distance check and the momentum micro-filter fire on ordinary
-# noise. 10 bps sits at the low end of a realistic 1-minute BTC/ETH range.
-_MIN_ATR_FRAC = 0.0010
+# noise. 25 bps: low enough not to distort a normally active market, high
+# enough that Core range (2.5 x ATR) still spans several grid steps
+# (>= grid_step_bps_min) rather than degenerating to a single level.
+_MIN_ATR_FRAC = 0.0025
 
 # Minimum data requirements
 _MIN_TRADES_FOR_VOL = 30

@@ -987,6 +987,53 @@ class TestDeadOidCache:
         await om.reconcile("BTC-PERP", list(desired), list(stale), mid_price=50000.0)
         om._client.bulk_orders.assert_not_called()
 
+    def test_placement_deferred_while_placed_cloid_unconfirmed(self):
+        """A cloid we just placed but haven't seen back in the view is not
+        placed again (other lag direction from the dead-oid guard)."""
+        om = _om()
+        cloid = "0x" + "c" * 32
+        om._placed_cloids[cloid] = (777, time.monotonic())
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.10)]
+
+        to_cancel, to_place = om._compute_diff(desired, [])
+        assert to_place == []
+
+    def test_placed_cloid_cleared_once_oid_confirmed_in_view(self):
+        om = _om()
+        cloid = "0x" + "c" * 32
+        om._placed_cloids[cloid] = (777, time.monotonic())
+        current = [_open(client_order_id=cloid, order_id=777, price=50000.0, size=0.10)]
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.10)]
+
+        to_cancel, to_place = om._compute_diff(desired, current)
+        assert to_place == []          # matched by cloid, nothing to place
+        assert to_cancel == []
+        assert cloid not in om._placed_cloids
+
+    def test_placed_cloid_entry_expires(self):
+        om = _om()
+        cloid = "0x" + "c" * 32
+        om._placed_cloids[cloid] = (777, time.monotonic() - 31.0)
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.10)]
+
+        to_cancel, to_place = om._compute_diff(desired, [])
+        assert len(to_place) == 1      # stale entry pruned, placement proceeds
+        assert cloid not in om._placed_cloids
+
+    @pytest.mark.asyncio
+    async def test_successful_placement_records_placed_cloid(self):
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_orders.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 424242}}]}},
+        }
+        cloid = "0x" + "d" * 32
+        desired = [_desired(client_order_id=cloid, price=50000.0, size=0.10)]
+
+        await om.reconcile("BTC-PERP", list(desired), [], mid_price=50000.0)
+        assert om._placed_cloids.get(cloid, (None,))[0] == 424242
+
 
 # ===========================================================================
 # Test: Emergency Flatten Protocol (integration with mock SDK)

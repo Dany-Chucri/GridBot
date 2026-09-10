@@ -365,7 +365,7 @@ class TestATR:
                    for i in range(_MIN_CANDLES_FOR_ATR)]
         _populate_candles(md, "BTC-PERP", candles)
         vm = md.compute_vol_metrics("BTC-PERP")
-        assert vm.atr == pytest.approx(50000.0 * 0.0010)
+        assert vm.atr == pytest.approx(50000.0 * 0.0025)
 
     def test_atr_uses_last_n_candles(self, md: MarketData):
         """With more than N candles, only the last N are used."""

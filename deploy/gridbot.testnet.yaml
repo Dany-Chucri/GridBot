@@ -13,7 +13,13 @@ wallet_address: "0x..."          # master account address (see gridbot.env.examp
 assets:
   - symbol: BTC-PERP
     leverage: 2.0
-    levels_per_side: 10          # reduced from default 25
+    # levels_per_side must satisfy the pre-flight grid-feasibility check:
+    # min_lot (0.001 BTC) * levels_per_side <= derived max_abs_position
+    # (total_risk_budget_pct * btc_weight * capital_allocation * leverage
+    #  * equity / mid_price). With the values below and ~1000 USDC of
+    # testnet equity that caps out around 6 levels; the bot refuses to
+    # start above that rather than run a degenerate 1-level grid.
+    levels_per_side: 6
     capital_allocation: 0.60
     # max_abs_position is NOT set here, RiskManager.preflight_check derives
     # it at startup from this asset's share of the shared risk budget
@@ -26,7 +32,10 @@ assets:
     max_flatten_slippage_bps: 50
 
 portfolio:
-  total_risk_budget_pct: 0.10
+  # 0.50 for the testnet soak (isolated faucet funds): 0.10 with ~1000 USDC
+  # of equity derives a max_abs_position below one BTC lot, so no grid can
+  # pass pre-flight. Restore to 0.10 for mainnet.
+  total_risk_budget_pct: 0.50
   btc_weight: 1.00               # single asset during soak
   eth_weight: 0.00
   portfolio_delta_mult: 0.75

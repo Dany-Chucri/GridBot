@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from gridbot.config import AssetConfig, BotConfig, PortfolioConfig
+from gridbot.config import AssetConfig, BotConfig, PortfolioConfig, min_order_size
 from gridbot.types import AssetState, Position, Regime, VolMetrics
 
 logger = logging.getLogger(__name__)
@@ -687,6 +687,20 @@ class RiskManager:
         progress = max(0.0, (covered_ms - _48H_MS) / (_7D_MS - _48H_MS))
         return bootstrap_threshold + progress * (base_threshold - bootstrap_threshold)
 
+    def get_baseline_vol(self, symbol: str) -> float:
+        """Median realized vol over the retained history (design §5.7's
+        "trailing 7d median vol"), or 0.0 when history is too thin to be a
+        useful reference. Feeds `VolMetrics.baseline_vol`, which the grid
+        slippage buffer and vol-scaled order sizing both key off.
+        """
+        vols = sorted(v for _, v in self._vol_history.get(symbol, []))
+        if len(vols) < 20:
+            return 0.0
+        mid = len(vols) // 2
+        if len(vols) % 2:
+            return vols[mid]
+        return (vols[mid - 1] + vols[mid]) / 2
+
     def _compute_vol_percentile(self, symbol: str, current_vol: float) -> float | None:
         """Percentile of `current_vol` within the trailing 7d history.
 
@@ -819,7 +833,25 @@ class RiskManager:
                 f"max_daily_drawdown {config.max_daily_drawdown_pct:.4f}"
             )
 
-        # 3. Flattenability, just check the formula is valid
+        # 3. Grid feasibility: the exchange minimum lot times levels_per_side
+        # must fit within the derived inventory cap. Otherwise the first few
+        # min-lot fills exhaust the cap and every remaining level is
+        # reduce-only from the start, the grid can never express its own
+        # sizing / skew, and it degenerates to ~1 level that churns.
+        if config.max_abs_position > 0:
+            min_lot = min_order_size(config.symbol)
+            grid_min_inventory = min_lot * config.levels_per_side
+            if grid_min_inventory > config.max_abs_position:
+                max_feasible_levels = int(config.max_abs_position / min_lot)
+                violations.append(
+                    f"grid infeasible: {config.levels_per_side} levels x min lot "
+                    f"{min_lot} = {grid_min_inventory:.5f} exceeds derived "
+                    f"max_abs_position {config.max_abs_position:.5f}. Reduce "
+                    f"levels_per_side to <= {max_feasible_levels}, or raise "
+                    f"equity / capital_allocation / leverage / this asset's weight."
+                )
+
+        # 4. Flattenability, just check the formula is valid
         # This is a runtime check; pre-flight validates the config is plausible
         if config.max_flatten_slippage_bps <= 0:
             violations.append("max_flatten_slippage_bps must be positive")

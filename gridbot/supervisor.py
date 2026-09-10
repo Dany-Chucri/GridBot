@@ -431,6 +431,10 @@ class Supervisor:
         # 2. Market data snapshot (also feeds vol history, see
         # _record_vol_sample, for percentile calcs and bootstrap coverage)
         vol_metrics = await self._record_vol_sample(symbol, now_ms)
+        # Trailing-vol baseline (design §5.7): reference point for the grid
+        # slippage buffer and vol-scaled order sizing. 0.0 until history is
+        # deep enough, both consumers fall back conservatively.
+        vol_metrics.baseline_vol = self._risk_manager.get_baseline_vol(symbol)
         state.vol_metrics = vol_metrics
         state.mid_price = self._market_data.get_mid_price(symbol)
         state.mark_price = self._market_data.get_mark_price(symbol)

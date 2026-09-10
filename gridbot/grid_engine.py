@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from gridbot.config import AssetConfig, OperationalConfig
+from gridbot.config import AssetConfig, OperationalConfig, min_order_size
 from gridbot.pricing import round_to_size, round_to_tick
 from gridbot.types import (
     AssetState,
@@ -43,9 +43,11 @@ SAFETY_MARGIN_BPS = 1.5
 # Core range constant (design doc section 5.2)
 CORE_RANGE_ATR = 2.5
 
-# Minimum order sizes per asset (placeholder, validated in Phase 8)
-MIN_ORDER_SIZE = {"BTC-PERP": 0.001, "ETH-PERP": 0.01}
-DEFAULT_MIN_ORDER_SIZE = 0.001
+# Realized-vol level at which a grid level deploys its full per-level
+# inventory budget (section 5.5). Used when no trailing-vol baseline is
+# available yet; above this vol the size scales down to keep dollar risk
+# per fill roughly constant.
+_BASELINE_VOL_FALLBACK = 0.5
 
 
 class GridEngine:
@@ -85,7 +87,7 @@ class GridEngine:
         position_size = state.position.size if state.position else 0.0
 
         step_bps = self.compute_effective_step(vol_metrics, state.mid_price)
-        order_size = self._compute_order_size(vol_metrics, state.account_equity)
+        order_size = self._compute_order_size(vol_metrics)
         inventory_zone = self.classify_inventory_zone(position_size)
 
         # Portfolio delta cap breach (section 9.2): this asset may be well
@@ -105,7 +107,7 @@ class GridEngine:
         # Expansion levels (conditional activation)
         expansion_levels = self._compute_expansion_levels(
             anchor, state.mid_price, step_bps, vol_metrics,
-            inventory_zone, position_size, state.account_equity,
+            inventory_zone, position_size,
         )
 
         all_levels = core_levels + expansion_levels
@@ -204,7 +206,6 @@ class GridEngine:
         vol_metrics: VolMetrics,
         inventory_zone: InventoryZone,
         position_size: float,
-        account_equity: float,
     ) -> list[GridLevel]:
         """Compute Expansion grid levels (section 5.2, Layer 2).
 
@@ -227,10 +228,7 @@ class GridEngine:
         expansion_step_bps = step_bps * self._config.expansion_step_mult
         expansion_range = self._config.expansion_range_atr * atr
 
-        # Expansion order size: use expansion_allocation fraction
-        expansion_size = self._compute_expansion_order_size(
-            vol_metrics, account_equity
-        )
+        expansion_size = self._compute_expansion_order_size(vol_metrics)
 
         levels: list[GridLevel] = []
 
@@ -321,54 +319,50 @@ class GridEngine:
     # Order sizing (section 5.5)
     # ------------------------------------------------------------------
 
-    def _compute_order_size(
-        self,
-        vol_metrics: VolMetrics,
-        account_equity: float,
-    ) -> float:
-        """Vol-scaled order size: target_risk_per_level / realized_vol.
+    def _compute_order_size(self, vol_metrics: VolMetrics) -> float:
+        """Vol-scaled Core order size (section 5.5).
 
-        target_risk_per_level = capital_allocation * account_equity / levels_per_side
+        The per-level budget is `max_abs_position / levels_per_side` (this
+        asset's derived inventory cap, section 9.1, split across levels).
+        The size is that full budget at the trailing-vol baseline and
+        scales down as realized vol rises, so dollar risk per fill stays
+        roughly constant. Clamped to [exchange minimum lot, per-level
+        budget].
         """
         cfg = self._config
-        if account_equity <= 0:
-            return self._min_order_size()
+        min_size = min_order_size(cfg.symbol)
+        if cfg.max_abs_position <= 0:
+            return min_size
 
-        target_risk = cfg.capital_allocation * account_equity / cfg.levels_per_side
+        per_level_budget = cfg.max_abs_position / cfg.levels_per_side
+        return self._vol_scaled_size(vol_metrics, per_level_budget, min_size)
 
-        vol = vol_metrics.realized_vol
-        # Guard against near-zero vol
-        vol = max(vol, 0.01)
-
-        order_size = target_risk / vol
-
-        min_size = self._min_order_size()
-        max_size = cfg.max_abs_position / cfg.levels_per_side if cfg.max_abs_position > 0 else min_size
-
-        return max(min_size, min(max_size, order_size))
-
-    def _compute_expansion_order_size(
-        self,
-        vol_metrics: VolMetrics,
-        account_equity: float,
-    ) -> float:
-        """Expansion layer size using expansion_allocation fraction."""
+    def _compute_expansion_order_size(self, vol_metrics: VolMetrics) -> float:
+        """Vol-scaled Expansion order size (section 5.5), against the
+        Expansion layer's per-level budget."""
         cfg = self._config
-        if account_equity <= 0:
-            return self._min_order_size()
+        min_size = min_order_size(cfg.symbol)
+        if cfg.max_abs_position <= 0:
+            return min_size
 
-        target_risk = cfg.expansion_allocation * account_equity / cfg.expansion_levels_per_side
+        per_level_budget = cfg.max_abs_position / cfg.expansion_levels_per_side
+        return self._vol_scaled_size(vol_metrics, per_level_budget, min_size)
 
+    @staticmethod
+    def _vol_scaled_size(
+        vol_metrics: VolMetrics, per_level_budget: float, min_size: float
+    ) -> float:
+        baseline = (
+            vol_metrics.baseline_vol
+            if vol_metrics.baseline_vol > 0
+            else _BASELINE_VOL_FALLBACK
+        )
         vol = max(vol_metrics.realized_vol, 0.01)
-        order_size = target_risk / vol
-
-        min_size = self._min_order_size()
-        max_size = cfg.max_abs_position / cfg.expansion_levels_per_side if cfg.max_abs_position > 0 else min_size
-
-        return max(min_size, min(max_size, order_size))
+        size = per_level_budget * (baseline / vol)
+        return max(min_size, min(per_level_budget, size))
 
     def _min_order_size(self) -> float:
-        return MIN_ORDER_SIZE.get(self._config.symbol, DEFAULT_MIN_ORDER_SIZE)
+        return min_order_size(self._config.symbol)
 
     # ------------------------------------------------------------------
     # Inventory skewing (section 6.2)

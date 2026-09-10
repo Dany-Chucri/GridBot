@@ -30,7 +30,7 @@
 ## gridbot/
 - `__init__.py`: Package init, version
 - `alerting.py`: Telegram/Discord alert delivery, wired into Supervisor's alert callback
-- `config.py`: Configuration loading and parameter dataclasses
+- `config.py`: Configuration loading, parameter dataclasses, per-asset min-lot lookup
 - `grid_engine.py`: Pure calculation: grid levels, spacing, sizing, anchor logic
 - `main.py`: CLI entry point, argument parsing, signal handling
 - `market_data.py`: WS/REST market data, fills, vol metrics

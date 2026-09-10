@@ -241,66 +241,65 @@ class TestGridSpacing:
 # ===========================================================================
 
 class TestOrderSizing:
-    """Section 5.5: vol-inverse sizing."""
+    """Section 5.5: vol-scaled sizing against the per-level inventory budget
+    (max_abs_position / levels_per_side)."""
+
+    def test_full_budget_at_baseline_vol(self):
+        cfg = _cfg(max_abs_position=100.0)  # core per-level budget = 20.0
+        eng = _engine(cfg=cfg)
+        vol = _vol(realized_vol=0.50, baseline_vol=0.50)
+        assert eng._compute_order_size(vol) == pytest.approx(20.0)
 
     def test_size_decreases_with_higher_vol(self):
-        # Equity chosen so raw sizes land between min and max clamps
-        # target_risk = 0.70 * 10 / 5 = 1.4
-        # low: 1.4 / 0.30 = 4.67, high: 1.4 / 0.90 = 1.56
-        cfg = _cfg(max_abs_position=100.0)
+        cfg = _cfg(max_abs_position=100.0)  # budget = 20.0
         eng = _engine(cfg=cfg)
-        low_vol = _vol(realized_vol=0.30)
-        high_vol = _vol(realized_vol=0.90)
-        s_low = eng._compute_order_size(low_vol, 10.0)
-        s_high = eng._compute_order_size(high_vol, 10.0)
+        s_low = eng._compute_order_size(_vol(realized_vol=0.60, baseline_vol=0.50))
+        s_high = eng._compute_order_size(_vol(realized_vol=1.20, baseline_vol=0.50))
         assert s_low > s_high
+        assert s_high == pytest.approx(20.0 * 0.50 / 1.20)
+
+    def test_size_clamped_at_budget_when_vol_below_baseline(self):
+        cfg = _cfg(max_abs_position=100.0)  # budget = 20.0
+        eng = _engine(cfg=cfg)
+        size = eng._compute_order_size(_vol(realized_vol=0.10, baseline_vol=0.50))
+        assert size == pytest.approx(20.0)
 
     def test_size_clamped_at_min(self):
-        # Huge vol + tiny equity so the raw size falls below min
-        cfg = _cfg(max_abs_position=10000.0)
+        # Per-level budget below the exchange minimum lot -> min lot.
+        cfg = _cfg(max_abs_position=0.001)  # budget = 0.0002
         eng = _engine(cfg=cfg)
-        vol = _vol(realized_vol=100.0)
-        size = eng._compute_order_size(vol, 0.01)  # tiny equity -> 0.70*0.01/5/100 = 0.000014
-        assert size == pytest.approx(0.001)  # BTC min
-
-    def test_size_clamped_at_max(self):
-        eng = _engine()
-        # Tiny vol -> huge order -> clamped to max_abs/levels
-        vol = _vol(realized_vol=0.01)
-        size = eng._compute_order_size(vol, 100_000.0)
-        assert size == pytest.approx(1.0 / 5)  # max_abs_position / levels_per_side
+        size = eng._compute_order_size(_vol(realized_vol=100.0))
+        assert size == pytest.approx(0.001)  # BTC min lot
 
     def test_near_zero_vol_no_infinity(self):
         eng = _engine()
-        vol = _vol(realized_vol=0.0)
-        size = eng._compute_order_size(vol, 100_000.0)
-        assert size > 0
-        assert size < float("inf")
+        size = eng._compute_order_size(_vol(realized_vol=0.0))
+        assert 0 < size < float("inf")
 
-    def test_zero_equity_returns_min(self):
-        eng = _engine()
-        size = eng._compute_order_size(_vol(), 0.0)
-        assert size == pytest.approx(0.001)
+    def test_zero_cap_returns_min(self):
+        cfg = _cfg(max_abs_position=0.0)
+        eng = _engine(cfg=cfg)
+        assert eng._compute_order_size(_vol()) == pytest.approx(0.001)
 
     def test_eth_min_size(self):
-        cfg = _cfg(symbol="ETH-PERP", max_abs_position=100.0)
+        cfg = _cfg(symbol="ETH-PERP", max_abs_position=0.001)
         eng = _engine(cfg=cfg)
-        vol = _vol(realized_vol=100.0)
-        size = eng._compute_order_size(vol, 1.0)  # tiny equity to hit min
-        assert size == pytest.approx(0.01)
+        size = eng._compute_order_size(_vol(realized_vol=100.0))
+        assert size == pytest.approx(0.01)  # ETH min lot
 
-    def test_expansion_uses_expansion_allocation(self):
-        """Expansion sizing uses expansion_allocation, not capital_allocation."""
-        cfg = _cfg(max_abs_position=1000.0)
+    def test_fallback_baseline_when_unset(self):
+        cfg = _cfg(max_abs_position=100.0)  # budget = 20.0
         eng = _engine(cfg=cfg)
-        vol = _vol(realized_vol=0.50)
-        # Use small equity so sizes don't hit max clamp
-        core_size = eng._compute_order_size(vol, 10.0)
-        exp_size = eng._compute_expansion_order_size(vol, 10.0)
-        # core: 0.70 * 10 / 5 / 0.50 = 2.8
-        # expansion: 0.30 * 10 / 3 / 0.50 = 2.0
-        assert core_size == pytest.approx(2.8)
-        assert exp_size == pytest.approx(2.0)
+        # baseline_vol=0 -> _BASELINE_VOL_FALLBACK (0.5)
+        size = eng._compute_order_size(_vol(realized_vol=1.0, baseline_vol=0.0))
+        assert size == pytest.approx(20.0 * 0.5 / 1.0)
+
+    def test_expansion_uses_expansion_level_count(self):
+        cfg = _cfg(max_abs_position=90.0)  # core 90/5=18, expansion 90/3=30
+        eng = _engine(cfg=cfg)
+        vol = _vol(realized_vol=1.0, baseline_vol=0.50)  # scale = 0.5
+        assert eng._compute_order_size(vol) == pytest.approx(18.0 * 0.5)
+        assert eng._compute_expansion_order_size(vol) == pytest.approx(30.0 * 0.5)
 
 
 # ===========================================================================
@@ -570,7 +569,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=50000.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         assert levels == []
 
@@ -580,7 +579,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=51300.0, step_bps=17.3,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         assert levels
         for l in levels:
@@ -593,7 +592,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=52300.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         assert levels == []
 
@@ -605,7 +604,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=51500.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         assert len(levels) > 0
 
@@ -615,7 +614,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=51500.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         # All levels should be expansion layer
         for l in levels:
@@ -627,7 +626,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=51500.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         core_range = CORE_RANGE_ATR * 500.0  # 1250
         # The closest levels to anchor should be near core_range boundary
@@ -646,7 +645,7 @@ class TestExpansionLevels:
         levels = eng._compute_expansion_levels(
             anchor=50000.0, mid_price=51500.0, step_bps=20.0,
             vol_metrics=vol, inventory_zone=InventoryZone.NORMAL,
-            position_size=0.0, account_equity=100_000.0,
+            position_size=0.0,
         )
         assert levels == []
 

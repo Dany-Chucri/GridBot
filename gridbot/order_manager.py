@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 # cancel attempts for that oid. Comfortably longer than the REST reconcile
 # interval and a WS reconnect, short enough that a stuck entry self-heals.
 _DEAD_OID_TTL_SECONDS = 60.0
+# How long a just-placed cloid is protected from re-placement while the
+# reconcile view catches up. REST reconciliation (5s) adopts exchange truth
+# well within this, so an entry that outlives the TTL means the placement
+# almost certainly failed and a retry is the safer choice.
+_PLACED_CLOID_TTL_SECONDS = 30.0
 
 
 class OrderManager:
@@ -60,6 +65,13 @@ class OrderManager:
         # in the view. Entries expire; HL oids are monotonic and never
         # reused, so the TTL is only a memory bound.
         self._dead_oids: dict[int, float] = {}
+        # Positive counterpart of _dead_oids: cloids we have successfully
+        # placed but not yet seen back in the reconcile view. Deterministic
+        # cloids (section 7.3) mean a level whose placement the WS view
+        # hasn't caught up on yet looks un-placed, and the diff would place
+        # it a second time, leaving two live orders on one cloid. cloid ->
+        # (oid, monotonic_ts); cleared once the oid shows up in `current`.
+        self._placed_cloids: dict[str, tuple[int, float]] = {}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -438,6 +450,29 @@ class OrderManager:
                 )
             to_place = [o for o in to_place if o.client_order_id not in stale_cloids]
 
+        # Same guard, other lag direction: a cloid we placed on a recent
+        # cycle whose oid the view hasn't shown yet. Placing again would
+        # rest two orders on one cloid. Clear entries the view has caught up
+        # on (or that have expired), defer the rest.
+        current_oids = {o.order_id for o in current}
+        now = time.monotonic()
+        for cloid, (oid, ts) in list(self._placed_cloids.items()):
+            if oid in current_oids or now - ts > _PLACED_CLOID_TTL_SECONDS:
+                del self._placed_cloids[cloid]
+        if self._placed_cloids:
+            unconfirmed = {
+                o.client_order_id for o in to_place
+                if o.client_order_id in self._placed_cloids
+            }
+            for o in to_place:
+                if o.client_order_id in unconfirmed:
+                    logger.debug(
+                        "Deferring placement for %s %s @ %.2f: cloid placed but "
+                        "not yet confirmed in view",
+                        o.symbol, o.side.value, o.price,
+                    )
+            to_place = [o for o in to_place if o.client_order_id not in unconfirmed]
+
         return to_cancel, to_place
 
     # ------------------------------------------------------------------
@@ -725,6 +760,11 @@ class OrderManager:
                         break
                     order = placements[i]
                     if self._is_order_success(s):
+                        oid = self._extract_oid(s)
+                        if order.client_order_id and oid is not None:
+                            self._placed_cloids[order.client_order_id] = (
+                                oid, time.monotonic(),
+                            )
                         logger.info(
                             "Placed %s %s %.6f @ %.2f%s",
                             order.symbol,
@@ -798,6 +838,21 @@ class OrderManager:
             return "resting" in status_entry or "filled" in status_entry
         s = str(status_entry).lower()
         return "resting" in s or "filled" in s
+
+    @staticmethod
+    def _extract_oid(status_entry: Any) -> int | None:
+        """Pull the exchange oid out of a successful placement status
+        (`{"resting": {"oid": N}}` or `{"filled": {"oid": N, ...}}`)."""
+        if not isinstance(status_entry, dict):
+            return None
+        for key in ("resting", "filled"):
+            inner = status_entry.get(key)
+            if isinstance(inner, dict) and "oid" in inner:
+                try:
+                    return int(inner["oid"])
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     def _track_alo_rejection(self, symbol: str) -> None:
         """Track ALO rejection count per minute window for alerting."""

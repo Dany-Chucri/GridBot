@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 # Endpoint configuration
 # ---------------------------------------------------------------------------
 
+# Exchange minimum order size (one lot) per asset. Used by GridEngine for
+# the size clamp and by RiskManager's pre-flight grid-feasibility check.
+_MIN_ORDER_SIZE = {"BTC-PERP": 0.001, "ETH-PERP": 0.01}
+_DEFAULT_MIN_ORDER_SIZE = 0.001
+
+
+def min_order_size(symbol: str) -> float:
+    """Exchange minimum order size (one lot) for `symbol`."""
+    return _MIN_ORDER_SIZE.get(symbol, _DEFAULT_MIN_ORDER_SIZE)
+
+
 MAINNET_BASE = "https://api.hyperliquid.xyz"
 MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
 MAINNET_REST_INFO = "https://api.hyperliquid.xyz/info"
