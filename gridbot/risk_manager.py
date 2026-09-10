@@ -32,10 +32,15 @@ _168H_MS = 168 * 60 * 60 * 1000
 _48H_MS = 48 * 60 * 60 * 1000
 _7D_MS = 7 * 24 * 60 * 60 * 1000
 
-# Max gap between consecutive vol samples for them to count as one
-# continuous history run. Restarts/reconnects that resolve faster than this
-# don't cost the bootstrap window; gaps wider than this (a real outage) do.
-_MAX_CONTINUOUS_GAP_MS = 5 * 60 * 1000
+# Bootstrap sufficiency is coverage-based, not a single unbroken run: the
+# trailing 48h must be substantially covered by real vol samples. This
+# tolerates many short gaps (reconnects, brief outages, ordinary restarts)
+# as long as the aggregate hole stays small, where the old "no gap over 5
+# minutes, ever" rule reset the entire 48h bootstrap on any single blip.
+# Coverage is counted in fixed buckets: a bucket counts as covered if it
+# holds at least one sample.
+_COVERAGE_BUCKET_MS = 5 * 60 * 1000
+_MIN_COVERAGE_RATIO = 0.80
 
 # Taker fee estimate for the worst-case-loss preflight formula (section 6.3:
 # worst_case_loss = grid_range*position + flatten_slippage + taker_fees).
@@ -270,7 +275,7 @@ class RiskManager:
         # first in evaluate()'s check order (breakout before vol), so it
         # needs the identical cold-start guard or a thin-history sample trips
         # it before _check_volatility ever gets a chance to.
-        if self._vol_history_sufficient(config.symbol):
+        if vol_metrics.realized_vol_valid and self._vol_history_sufficient(config.symbol):
             vol_percentile = self._compute_vol_percentile(config.symbol, vol_metrics.realized_vol)
             effective_kill_threshold = self._bootstrap_adjusted_threshold(
                 config.symbol, config.vol_kill_percentile
@@ -315,6 +320,12 @@ class RiskManager:
         cancel-and-flatten instead of merely pausing new orders.
         """
         if not self._vol_history_sufficient(symbol):
+            return None
+
+        # A fallback reading (too few trades to measure) can't be placed on
+        # the percentile distribution: skip the circuit breaker this cycle
+        # rather than act on a fabricated value.
+        if not vol_metrics.realized_vol_valid:
             return None
 
         vol_percentile = self._compute_vol_percentile(symbol, vol_metrics.realized_vol)
@@ -554,6 +565,12 @@ class RiskManager:
         if not self._vol_history_sufficient(symbol):
             return self._classified(symbol, Regime.UNKNOWN, "insufficient-vol-history")
 
+        # A fallback vol reading (too few trades to measure) can't drive
+        # signal 1; fail safe to UNKNOWN for this cycle rather than
+        # classifying against a fabricated value.
+        if not vol_metrics.realized_vol_valid:
+            return self._classified(symbol, Regime.UNKNOWN, "vol-reading-unavailable")
+
         # Signal 1: Volatility level
         vol_percentile = self._compute_vol_percentile(symbol, vol_metrics.realized_vol)
         if vol_percentile is None:
@@ -595,23 +612,30 @@ class RiskManager:
         """Deciding signal from the last detect_regime call for `symbol`."""
         return self._regime_reason.get(symbol)
 
-    def _continuous_run(self, symbol: str) -> list[tuple[int, float]]:
-        """Trailing run of vol samples with no internal gap exceeding
-        `_MAX_CONTINUOUS_GAP_MS`.
+    def _covered_ms(self, symbol: str, now_ms: int, window_ms: int) -> int:
+        """Real-sample coverage of the trailing `window_ms`, in milliseconds.
 
-        Samples on the far side of a large gap (a real outage, not a
-        restart/reconnect that resolved quickly) don't count toward
-        sufficiency, they may be real, but they no longer establish that
-        we've had *continuous* visibility into recent conditions.
+        Counts distinct `_COVERAGE_BUCKET_MS` buckets inside the window that
+        hold at least one vol sample, times the bucket width. A window fully
+        covered by samples returns `window_ms`; scattered gaps subtract only
+        their own duration, not the whole bootstrap.
         """
         history = self._vol_history.get(symbol, [])
         if not history:
-            return []
-        start = 0
-        for i in range(1, len(history)):
-            if history[i][0] - history[i - 1][0] > _MAX_CONTINUOUS_GAP_MS:
-                start = i
-        return history[start:]
+            return 0
+        cutoff_bucket = (now_ms - window_ms) // _COVERAGE_BUCKET_MS
+        now_bucket = now_ms // _COVERAGE_BUCKET_MS
+        buckets = {
+            ts // _COVERAGE_BUCKET_MS
+            for ts, _ in history
+            if cutoff_bucket <= ts // _COVERAGE_BUCKET_MS <= now_bucket
+        }
+        return len(buckets) * _COVERAGE_BUCKET_MS
+
+    def _history_now_ms(self, symbol: str) -> int:
+        """Timestamp of the most recent vol sample, 0 if none."""
+        history = self._vol_history.get(symbol, [])
+        return history[-1][0] if history else 0
 
     def load_vol_history(
         self, symbol: str, samples: list[tuple[int, float]], now_ms: int
@@ -627,53 +651,55 @@ class RiskManager:
         self._vol_history[symbol] = [(ts, v) for ts, v in samples if ts >= cutoff]
 
     def _vol_history_sufficient(self, symbol: str) -> bool:
-        """Check if minimum vol history window (48h) has been met."""
-        run = self._continuous_run(symbol)
-        if len(run) < 2:
+        """Whether the trailing 48h is covered densely enough by real vol
+        samples to trust percentile-based vol logic.
+
+        Requires the oldest sample to be at least 48h old (enough history
+        exists) AND at least `_MIN_COVERAGE_RATIO` of the trailing 48h to be
+        covered by samples (the history has few enough holes).
+        """
+        history = self._vol_history.get(symbol, [])
+        if len(history) < 2:
             return False
-        oldest_ts = run[0][0]
-        newest_ts = run[-1][0]
-        span_ms = newest_ts - oldest_ts
-        return span_ms >= _48H_MS
+        now_ms = history[-1][0]
+        if now_ms - history[0][0] < _48H_MS:
+            return False
+        return self._covered_ms(symbol, now_ms, _48H_MS) >= _MIN_COVERAGE_RATIO * _48H_MS
 
     def _bootstrap_adjusted_threshold(self, symbol: str, base_threshold: float) -> float:
         """Tighten vol_pause_percentile during bootstrap (48h–7d).
 
-        At 48h: use 70th percentile (tighter) instead of configured threshold.
-        At 7d: use configured threshold as-is.
-        Linear interpolation between.
+        At 48h of real coverage: use 70th percentile (tighter) instead of
+        the configured threshold. At 7d: use the configured threshold
+        as-is. Linear interpolation between, driven by covered time (not
+        wall-clock span) so scattered gaps only slow the ramp by their own
+        duration.
         """
-        run = self._continuous_run(symbol)
-        if len(run) < 2:
+        now_ms = self._history_now_ms(symbol)
+        if now_ms == 0:
             return base_threshold
 
-        oldest_ts = run[0][0]
-        newest_ts = run[-1][0]
-        span_ms = newest_ts - oldest_ts
-
-        if span_ms >= _7D_MS:
-            # Steady state, no bias
+        covered_ms = self._covered_ms(symbol, now_ms, _7D_MS)
+        if covered_ms >= _7D_MS:
             return base_threshold
 
-        # Bootstrap bias: interpolate between tighter threshold and configured
-        # At 48h: bootstrap_threshold. At 7d: base_threshold.
         bootstrap_threshold = min(base_threshold, 0.70)
-        progress = max(0.0, (span_ms - _48H_MS) / (_7D_MS - _48H_MS))
+        progress = max(0.0, (covered_ms - _48H_MS) / (_7D_MS - _48H_MS))
         return bootstrap_threshold + progress * (base_threshold - bootstrap_threshold)
 
     def _compute_vol_percentile(self, symbol: str, current_vol: float) -> float | None:
-        """Compute percentile of current vol within the rolling history.
+        """Percentile of `current_vol` within the trailing 7d history.
 
-        Returns None if insufficient history.
+        Uses every retained sample (`record_vol` already trims to 7d).
+        Now that fallback readings are never recorded (design doc section
+        6.4), the distribution is all real measurements. Returns None only
+        when there is no history at all.
         """
-        history = self._continuous_run(symbol)
-        if not history:
+        history = self._vol_history.get(symbol, [])
+        if len(history) < 2:
             return None
 
         vol_values = [v for _, v in history]
-        if not vol_values:
-            return None
-
         count_below = sum(1 for v in vol_values if v <= current_vol)
         return count_below / len(vol_values)
 

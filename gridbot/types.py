@@ -151,6 +151,11 @@ class VolMetrics:
     rolling_return_1m: float   # 1-minute rolling return
     rolling_return_5m: float   # 5-minute rolling return
     baseline_vol: float = 0.0  # Trailing 7d median vol (reference for "normal")
+    # False when realized_vol is a conservative fallback (too few trades /
+    # too short a span to measure), not a real reading. Fallback readings
+    # must not enter the vol-history percentile distribution or drive the
+    # vol circuit breakers / regime signal 1.
+    realized_vol_valid: bool = True
 
 
 @dataclass

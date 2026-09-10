@@ -40,6 +40,13 @@ _DEFAULT_REALIZED_VOL = 1.0  # 100% annualized
 _DEFAULT_SPREAD_BPS = 50.0
 _DEFAULT_ROLLING_RETURN = 0.0
 
+# Floor on the ATR proxy, as a fraction of mid price. Minute candles are
+# built only from trade ticks; a sparse minute (few trades, all near the
+# same price) collapses true range toward zero, which would make the
+# breakout-distance check and the momentum micro-filter fire on ordinary
+# noise. 10 bps sits at the low end of a realistic 1-minute BTC/ETH range.
+_MIN_ATR_FRAC = 0.0010
+
 # Minimum data requirements
 _MIN_TRADES_FOR_VOL = 30
 _MIN_CANDLES_FOR_ATR = 14
@@ -803,9 +810,11 @@ class MarketData:
         else:
             spread_bps = _DEFAULT_SPREAD_BPS
 
-        # Realized vol
+        # Realized vol, None when there is not enough data to measure it
         buf = self._return_buffers.get(symbol, deque())
-        realized_vol = self._compute_realized_vol(buf, mid)
+        measured_vol = self._compute_realized_vol(buf, mid)
+        realized_vol_valid = measured_vol is not None
+        realized_vol = measured_vol if realized_vol_valid else _DEFAULT_REALIZED_VOL
 
         # ATR proxy
         candles = self._minute_candles.get(symbol, deque())
@@ -821,6 +830,7 @@ class MarketData:
             spread_bps=spread_bps,
             rolling_return_1m=rolling_1m,
             rolling_return_5m=rolling_5m,
+            realized_vol_valid=realized_vol_valid,
         )
 
     # ------------------------------------------------------------------
@@ -828,10 +838,16 @@ class MarketData:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_realized_vol(buf: deque[tuple[int, float]], mid: float) -> float:
-        """Standard deviation of log returns, resampled at fixed intervals, annualized."""
+    def _compute_realized_vol(buf: deque[tuple[int, float]], mid: float) -> float | None:
+        """Standard deviation of log returns, resampled at fixed intervals, annualized.
+
+        Returns None when there is not enough trade data to produce a real
+        measurement. Callers substitute a conservative fallback for sizing
+        and slippage, but a None result must never be recorded into the
+        vol-history percentile distribution (design doc section 6.4).
+        """
         if len(buf) < _MIN_TRADES_FOR_VOL:
-            return _DEFAULT_REALIZED_VOL
+            return None
 
         entries = list(buf)
         start_ms, end_ms = entries[0][0], entries[-1][0]
@@ -839,7 +855,7 @@ class MarketData:
         interval_ms = _VOL_SAMPLE_INTERVAL_S * 1000
 
         if span_ms < interval_ms * 2:
-            return _DEFAULT_REALIZED_VOL
+            return None
 
         # Resample to fixed intervals by last-known price
         sampled: list[float] = []
@@ -852,7 +868,7 @@ class MarketData:
             t += interval_ms
 
         if len(sampled) < 2:
-            return _DEFAULT_REALIZED_VOL
+            return None
 
         # Log returns
         log_rets: list[float] = []
@@ -861,7 +877,7 @@ class MarketData:
                 log_rets.append(math.log(sampled[i] / sampled[i - 1]))
 
         if len(log_rets) < 2:
-            return _DEFAULT_REALIZED_VOL
+            return None
 
         mean_r = sum(log_rets) / len(log_rets)
         variance = sum((r - mean_r) ** 2 for r in log_rets) / (len(log_rets) - 1)
@@ -872,7 +888,13 @@ class MarketData:
 
     @staticmethod
     def _compute_atr(candles: deque[dict], mid: float) -> float:
-        """ATR proxy: average true range from the last N minute candles."""
+        """ATR proxy: average true range from the last N minute candles.
+
+        Floored at `_MIN_ATR_FRAC * mid`: sparse minute candles can drive
+        the raw average true range to near zero, which would turn the
+        breakout-distance check and momentum micro-filter into hair
+        triggers on ordinary market noise.
+        """
         if len(candles) < _MIN_CANDLES_FOR_ATR:
             return mid * 0.02 if mid > 0 else 0.0
 
@@ -887,7 +909,9 @@ class MarketData:
                 tr = high - low
             true_ranges.append(tr)
 
-        return sum(true_ranges) / len(true_ranges)
+        atr = sum(true_ranges) / len(true_ranges)
+        floor = mid * _MIN_ATR_FRAC if mid > 0 else 0.0
+        return max(atr, floor)
 
     @staticmethod
     def _compute_ema(candles: deque[dict], period: int) -> float:

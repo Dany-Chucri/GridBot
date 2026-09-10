@@ -120,7 +120,7 @@ class Supervisor:
         # Wall-clock timestamp of the current MAINTENANCE episode's entry
         # (None when not in maintenance). Logged as a duration on exit so a
         # creeping maintenance window shows up before it's long enough to
-        # blow past _MAX_CONTINUOUS_GAP_MS and reset vol-history bootstrap.
+        # open a hole in the vol-history coverage window and reset bootstrap.
         self._maintenance_entered_ms: int | None = None
 
     # ------------------------------------------------------------------
@@ -204,10 +204,11 @@ class Supervisor:
                 state.grid_config = grid_cfg
 
             # Restore vol history so a restart doesn't cost a fresh 48h
-            # bootstrap on top of real, already-accumulated data. Gap-aware
-            # sufficiency (_continuous_run) decides whether it's still
-            # usable, a short gap (ordinary restart) is transparent, a
-            # long one (real outage) correctly forces a fresh bootstrap.
+            # bootstrap on top of real, already-accumulated data. Coverage-
+            # based sufficiency decides whether it's still usable, scattered
+            # short gaps (ordinary restarts, reconnects) subtract only their
+            # own duration; a long outage drops coverage below the threshold
+            # and correctly forces a fresh bootstrap.
             vol_samples = await self._state_store.load_vol_history(symbol)
             self._risk_manager.load_vol_history(
                 symbol, vol_samples, int(time.time() * 1000)
@@ -376,8 +377,9 @@ class Supervisor:
         # doesn't page operators during long cooldowns). Still sample vol
         # and equity while waiting, a planned cooldown (default 30 min) is
         # not a data gap, only MAINTENANCE (a real exchange-side outage)
-        # should be allowed to blow _MAX_CONTINUOUS_GAP_MS and reset
-        # bootstrap, or leave a hole in the drawdown window. But COOLDOWN
+        # should be allowed to open a hole in the vol-history coverage
+        # window and reset bootstrap, or leave a hole in the drawdown
+        # window. But COOLDOWN
         # skips the desync/maintenance checks below entirely, so a real
         # outage that happens to fall inside a cooldown window would
         # otherwise go undetected: skip sampling while the WS is stale so
@@ -412,7 +414,7 @@ class Supervisor:
         await self._record_equity_sample(state, now_ms)
 
         # 2. Market data snapshot (also feeds vol history, see
-        # _record_vol_sample, for percentile calcs and RiskManager._continuous_run)
+        # _record_vol_sample, for percentile calcs and bootstrap coverage)
         vol_metrics = await self._record_vol_sample(symbol, now_ms)
         state.vol_metrics = vol_metrics
         state.mid_price = self._market_data.get_mid_price(symbol)
@@ -465,9 +467,10 @@ class Supervisor:
                 details={"type": "regime_trend"},
             )
 
-        # UNKNOWN (insufficient continuous vol history, cold start, or a
-        # restart after a gap wide enough that _continuous_run resets) gets
-        # the same treatment as HIGH_VOL: pause new placement, leave
+        # UNKNOWN (insufficient vol-history coverage, cold start, a current
+        # reading too thin to measure, or an outage that dropped coverage
+        # below threshold) gets the same treatment as HIGH_VOL: pause new
+        # placement, leave
         # existing orders resting. Breakout, backstop, momentum filter, and
         # drawdown checks are independent of vol history and stay fully
         # live regardless, only the percentile-based regime call and the
@@ -640,17 +643,25 @@ class Supervisor:
             state.account_equity = account_equity
 
     async def _record_vol_sample(self, symbol: str, now_ms: int) -> VolMetrics:
-        """Sample realized vol for percentile calcs and continuity tracking.
+        """Sample realized vol for percentile calcs and coverage tracking.
 
         Called every cycle the bot is up and taking market data, including
         while parked in COOLDOWN, a planned cooldown is not a data gap.
         Only MAINTENANCE (a real exchange-side outage, where market data
-        itself is unavailable) should be able to blow
-        RiskManager._MAX_CONTINUOUS_GAP_MS and reset the bootstrap.
+        itself is unavailable) should be able to open a hole in the
+        vol-history coverage window and reset the bootstrap.
+
+        A reading flagged `realized_vol_valid=False` (too few trades to
+        measure) is returned for sizing/slippage use but is NOT recorded:
+        the conservative fallback value would distort every percentile
+        computed against the history (design doc section 6.4).
         """
         vol_metrics = self._market_data.compute_vol_metrics(symbol)
-        self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
-        await self._state_store.append_vol_sample(symbol, now_ms, vol_metrics.realized_vol)
+        if vol_metrics.realized_vol_valid:
+            self._risk_manager.record_vol(symbol, now_ms, vol_metrics.realized_vol)
+            await self._state_store.append_vol_sample(
+                symbol, now_ms, vol_metrics.realized_vol
+            )
         return vol_metrics
 
     def _ws_is_stale(self, now_ms: int) -> bool:

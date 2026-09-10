@@ -241,6 +241,15 @@ class TestRealizedVol:
         _populate_trades(md, "BTC-PERP", [100.0] * (_MIN_TRADES_FOR_VOL - 1))
         vm = md.compute_vol_metrics("BTC-PERP")
         assert vm.realized_vol == _DEFAULT_REALIZED_VOL
+        # Fallback value, not a real measurement: must not be recorded.
+        assert vm.realized_vol_valid is False
+
+    def test_sufficient_data_marks_reading_valid(self, md: MarketData):
+        prices = [50000.0 + (i % 2) * 50 for i in range(60)]
+        _populate_trades(md, "BTC-PERP", prices, interval_ms=5_000)
+        md._mid_prices["BTC-PERP"] = prices[-1]
+        vm = md.compute_vol_metrics("BTC-PERP")
+        assert vm.realized_vol_valid is True
 
     def test_constant_price_zero_vol(self, md: MarketData):
         """Constant prices → zero realized vol."""
@@ -346,6 +355,17 @@ class TestATR:
         """No mid price and insufficient candles → ATR = 0."""
         vm = md.compute_vol_metrics("BTC-PERP")
         assert vm.atr == 0.0
+
+    def test_atr_floored_when_candles_degenerate(self, md: MarketData):
+        """Sparse near-flat minute candles collapse raw true range toward
+        zero; the proxy is floored at _MIN_ATR_FRAC * mid so downstream
+        breakout / momentum thresholds don't become hair triggers."""
+        md._mid_prices["BTC-PERP"] = 50000.0
+        candles = [_make_candle(50000.0, 50000.1, 49999.9, 50000.0, ts=i * 60_000)
+                   for i in range(_MIN_CANDLES_FOR_ATR)]
+        _populate_candles(md, "BTC-PERP", candles)
+        vm = md.compute_vol_metrics("BTC-PERP")
+        assert vm.atr == pytest.approx(50000.0 * 0.0010)
 
     def test_atr_uses_last_n_candles(self, md: MarketData):
         """With more than N candles, only the last N are used."""

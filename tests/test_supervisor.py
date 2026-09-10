@@ -758,6 +758,27 @@ class TestCycle:
         md.fetch_account_equity.assert_not_called()
         rm.record_equity.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_invalid_vol_reading_is_not_recorded(self):
+        """A reading flagged realized_vol_valid=False (too few trades to
+        measure) is used for sizing but never enters the percentile
+        history, the fallback value would distort every percentile."""
+        md = _mock_market_data()
+        md.compute_vol_metrics = MagicMock(return_value=VolMetrics(
+            realized_vol=1.0, atr=100.0, spread_bps=2.0,
+            rolling_return_1m=0.0, rolling_return_5m=0.0,
+            realized_vol_valid=False,
+        ))
+        rm = _mock_risk_manager()
+        ss = _mock_state_store()
+        sup = _make_supervisor(market_data=md, risk_manager=rm, state_store=ss)
+        asset_cfg = sup._config.assets[0]
+
+        await sup._run_cycle(asset_cfg.symbol, asset_cfg)
+
+        rm.record_vol.assert_not_called()
+        ss.append_vol_sample.assert_not_awaited()
+
 
 class TestAnchorManagement:
     """Section 5.1: anchor establishment and re-anchoring, driven each

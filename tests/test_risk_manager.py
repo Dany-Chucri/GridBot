@@ -24,6 +24,7 @@ def _vol(
     rolling_return_1m: float = 0.0,
     rolling_return_5m: float = 0.0,
     baseline_vol: float = 0.50,
+    realized_vol_valid: bool = True,
 ) -> VolMetrics:
     return VolMetrics(
         realized_vol=realized_vol,
@@ -32,6 +33,7 @@ def _vol(
         rolling_return_1m=rolling_return_1m,
         rolling_return_5m=rolling_return_5m,
         baseline_vol=baseline_vol,
+        realized_vol_valid=realized_vol_valid,
     )
 
 
@@ -96,18 +98,17 @@ def _state(**overrides) -> AssetState:
     return AssetState(**defaults)
 
 
-# Max gap RiskManager treats as "continuous" (mirrors
-# RiskManager._MAX_CONTINUOUS_GAP_MS). Seeded histories must stay under
-# this between consecutive samples, or _continuous_run only sees the
-# trailing segment, same as it would for a real gap/outage.
+# Sample spacing for seeded histories. Kept under RiskManager's coverage
+# bucket width (_COVERAGE_BUCKET_MS, 5 min) so a dense span leaves no
+# empty bucket and counts as fully covered.
 _SAFE_STEP_MS = 4 * 60 * 1000
 
 
 def _dense_span(span_ms: int, vol_low: float, vol_high: float | None = None,
                  start_ms: int = 0) -> list[tuple[int, float]]:
-    """Build a vol-history list spanning span_ms with no internal gap
-    approaching the continuity threshold, so RiskManager._continuous_run
-    treats it as one run, matches real record_vol() cadence (~1/s)."""
+    """Build a vol-history list spanning span_ms with a sample at least
+    once per coverage bucket, so RiskManager treats the whole span as
+    covered; matches real record_vol() cadence (~1/s)."""
     n = max(2, span_ms // _SAFE_STEP_MS + 1)
     vh = vol_high if vol_high is not None else vol_low
     return [
@@ -225,6 +226,20 @@ class TestRegimeDetection:
         assert rm.regime_reason("BTC-PERP") == "all-signals-clear"
         assert rm.regime_reason("ETH-PERP") is None
 
+    def test_unknown_when_current_vol_reading_invalid(self):
+        """Even with 48h of history, a fallback vol reading (too few trades
+        to measure) can't drive signal 1, fail safe to UNKNOWN."""
+        rm = _rm()
+        last_ts = _seed_vol_history(rm)
+        regime = rm.detect_regime(
+            "BTC-PERP", 50000.0,
+            _vol(realized_vol=1.0, atr=500.0, realized_vol_valid=False),
+            moving_avg=50000.0, last_breakout_ms=None,
+            now_ms=last_ts, config=_cfg(),
+        )
+        assert regime == Regime.UNKNOWN
+        assert rm.regime_reason("BTC-PERP") == "vol-reading-unavailable"
+
     def test_unknown_with_insufficient_history(self):
         rm = _rm()
         # Only 24h of history, not 48h minimum
@@ -300,14 +315,14 @@ class TestRegimeDetection:
 
 
 # ---------------------------------------------------------------------------
-# TestVolHistoryContinuity, gap-aware sufficiency + persistence reload
-# (project decision: vol history persistence, 5-minute continuity gap)
+# TestVolHistoryContinuity, coverage-based sufficiency + persistence reload
+# (project decision: vol history persistence; coverage-based bootstrap)
 # ---------------------------------------------------------------------------
 
 class TestVolHistoryContinuity:
-    def test_small_gap_stays_continuous(self):
-        """A gap under the 5-minute threshold (e.g. an ordinary restart)
-        doesn't reset sufficiency, old and new samples count as one run."""
+    def test_small_gap_stays_sufficient(self):
+        """A short gap (an ordinary restart / reconnect) subtracts only its
+        own duration from coverage, not the whole 48h bootstrap."""
         rm = _rm()
         span_48h = 48 * 60 * 60 * 1000
         history = _dense_span(span_48h, 0.50)
@@ -319,10 +334,26 @@ class TestVolHistoryContinuity:
 
         assert rm._vol_history_sufficient("BTC-PERP") is True
 
-    def test_large_gap_breaks_continuity(self):
-        """A gap over the 5-minute threshold (a real outage) means only the
-        trailing run counts, pre-gap history no longer satisfies the 48h
-        minimum even though it's technically still in `_vol_history`."""
+    def test_many_small_gaps_stay_sufficient(self):
+        """Several scattered short gaps (a churny WS) still leave coverage
+        well above the 80% threshold, where the old single-run rule reset
+        the entire bootstrap on the first blip."""
+        rm = _rm()
+        now = 60 * 24 * 60 * 60 * 1000
+        samples: list[tuple[int, float]] = []
+        # 60h of samples every 2 min, punching a 6-min hole once an hour.
+        t = now - 60 * 60 * 60 * 1000
+        while t <= now:
+            samples.append((t, 0.50))
+            t += 2 * 60 * 1000
+            if (t // (60 * 60 * 1000)) != ((t - 2 * 60 * 1000) // (60 * 60 * 1000)):
+                t += 6 * 60 * 1000
+        rm._vol_history["BTC-PERP"] = samples
+        assert rm._vol_history_sufficient("BTC-PERP") is True
+
+    def test_long_outage_drops_below_coverage(self):
+        """A multi-hour outage inside the trailing 48h drops coverage below
+        the threshold and forces a fresh bootstrap."""
         rm = _rm()
         span_48h = 48 * 60 * 60 * 1000
         history = _dense_span(span_48h, 0.50)
