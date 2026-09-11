@@ -233,7 +233,21 @@ class OrderManager:
         Minimizes the window where the backstop is absent by including
         backstop cancel/place in the same cancel/place sequence as grid orders.
         """
-        to_cancel, to_place = self._compute_diff(desired, current)
+        # The backstop trigger order is never part of GridEngine's desired
+        # set, it's a separate order class lifecycle-managed by the block
+        # below. Once the open-orders view includes it (section 4.3), the
+        # grid diff would otherwise read it as an orphan (not in desired)
+        # and cancel it every cycle, racing the backstop-maintenance logic
+        # that immediately replaces it under the same cloid. Excluding the
+        # current config's backstop cloids from the grid diff leaves a
+        # stale backstop from an old config_hash still subject to the
+        # ordinary orphan-cancel safety net.
+        backstop_cloids = {
+            self._generate_backstop_id(symbol, d, config_hash) for d in ("long", "short")
+        }
+        grid_current = [o for o in current if o.client_order_id not in backstop_cloids]
+
+        to_cancel, to_place = self._compute_diff(desired, grid_current)
         to_cancel = self._drop_dead_oids(to_cancel)
         pos_size = position.size if position else 0.0
         coin = self._to_coin(symbol)
@@ -585,7 +599,7 @@ class OrderManager:
                 result = await loop.run_in_executor(
                     None, self._client.bulk_cancel, cancel_requests
                 )
-                self._parse_cancel_result(result, cancels)
+                self._parse_cancel_result(result, cancels, extra_cancel_oids)
             except Exception:
                 logger.exception(
                     "Batch cancel failed (%d orders)", len(cancel_requests)
@@ -673,9 +687,19 @@ class OrderManager:
         return True
 
     def _parse_cancel_result(
-        self, result: Any, cancels: list[OpenOrder]
+        self,
+        result: Any,
+        cancels: list[OpenOrder],
+        extra_cancel_oids: list[dict] | None = None,
     ) -> None:
-        """Parse cancel batch result and log per-order outcomes."""
+        """Parse cancel batch result and log per-order outcomes.
+
+        `extra_cancel_oids` (e.g. the backstop cancels appended in
+        `reconcile_with_backstop`) sit after `cancels` in the same batch
+        response; without handling them here they fell off the end of the
+        loop, so a failing backstop cancel was silently absorbed into the
+        aggregate "N failed" count with no oid, symbol, or error logged.
+        """
         if not isinstance(result, dict):
             logger.warning("Unexpected cancel result type: %s", type(result))
             return
@@ -685,29 +709,28 @@ class OrderManager:
             response = result.get("response", {})
             if response.get("type") == "cancel":
                 statuses = response.get("data", {}).get("statuses", [])
+                extra_cancel_oids = extra_cancel_oids or []
                 success = sum(1 for s in statuses if "success" in str(s).lower())
                 failed = len(statuses) - success
                 for i, s in enumerate(statuses):
-                    if i >= len(cancels):
-                        break
-                    order = cancels[i]
-                    if "success" in str(s).lower():
-                        self._record_dead_oid(order.order_id)
-                        logger.info(
-                            "Cancelled oid=%d %s %s @ %.2f",
-                            order.order_id,
-                            order.symbol,
-                            order.side.value,
-                            order.price,
-                        )
+                    if i < len(cancels):
+                        order = cancels[i]
+                        oid = order.order_id
+                        label = f"{order.symbol} {order.side.value} @ {order.price:.2f}"
                     else:
-                        logger.warning(
-                            "Cancel failed for oid=%d: %s",
-                            order.order_id,
-                            s,
-                        )
+                        extra_idx = i - len(cancels)
+                        if extra_idx >= len(extra_cancel_oids):
+                            continue
+                        extra = extra_cancel_oids[extra_idx]
+                        oid = extra.get("oid")
+                        label = f"{extra.get('coin', '?')} (backstop/extra)"
+                    if "success" in str(s).lower():
+                        self._record_dead_oid(oid)
+                        logger.info("Cancelled oid=%s %s", oid, label)
+                    else:
+                        logger.warning("Cancel failed for oid=%s (%s): %s", oid, label, s)
                         if self._is_already_gone(s):
-                            self._record_dead_oid(order.order_id)
+                            self._record_dead_oid(oid)
                 if failed:
                     logger.warning(
                         "Cancel batch: %d succeeded, %d failed", success, failed

@@ -1382,6 +1382,26 @@ class TestParseResults:
         om = _om()
         om._parse_cancel_result("not a dict", [])  # type: ignore
 
+    def test_extra_cancel_failure_is_logged_not_swallowed(self, caplog):
+        """A failing extra (backstop) cancel, previously fell off the end
+        of the per-order loop once the grid cancels were exhausted, and
+        showed up only as an unattributed count in the aggregate line."""
+        om = _om()
+        result = {
+            "status": "ok",
+            "response": {
+                "type": "cancel",
+                "data": {"statuses": ["success", {"error": "already canceled"}]},
+            },
+        }
+        with caplog.at_level("WARNING"):
+            om._parse_cancel_result(
+                result, [_open(order_id=1)],
+                extra_cancel_oids=[{"coin": "BTC", "oid": 555}],
+            )
+        assert any("555" in r.message for r in caplog.records)
+        assert om._is_dead_oid(555)  # "already canceled" -> recorded dead
+
 
 # ===========================================================================
 # Test: Build Order Type
@@ -2056,6 +2076,80 @@ class TestReconcileWithBackstop:
             )
 
         assert any("Backstop order update failed" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_existing_backstop_not_double_cancelled_as_grid_orphan(self):
+        """The backstop trigger order is not part of GridEngine's desired
+        set. Once the open-orders view includes it (design section 4.3),
+        the grid diff must not also treat it as an orphan, that would
+        cancel it a second time, racing the backstop-maintenance block
+        that replaces it under the same cloid every cycle."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+
+        config_hash = "cfgX"
+        backstop_cloid = OrderManager._generate_backstop_id("BTC-PERP", "short", config_hash)
+        backstop_order = _open(order_id=555, client_order_id=backstop_cloid, price=51000.0)
+        om._info.frontend_open_orders.return_value = [
+            {"coin": "BTC", "oid": 555, "cloid": backstop_cloid}
+        ]
+
+        cancel_calls = []
+
+        def mock_cancel(reqs):
+            cancel_calls.append(reqs)
+            return {"status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success"] * len(reqs)}}}
+
+        om._client.bulk_cancel = mock_cancel
+        om._client.bulk_orders = MagicMock(return_value={
+            "status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 999}}]}},
+        })
+
+        await om.reconcile_with_backstop(
+            "BTC-PERP", desired=[], current=[backstop_order], mid_price=50000.0,
+            position=_pos(size=-0.1), anchor=50000.0, atr=500.0,
+            breakout_atr_distance=4.5, backstop_buffer_atr=1.0, config_hash=config_hash,
+        )
+
+        assert len(cancel_calls) == 1
+        oids = [r["oid"] for r in cancel_calls[0]]
+        assert oids.count(555) == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_backstop_from_old_config_hash_still_swept(self):
+        """A backstop left over from a prior config_hash (e.g. after a
+        re-anchor) is not protected, only the current config's backstop
+        cloids are excluded from the grid orphan check."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._info.frontend_open_orders.return_value = []  # nothing under the new config hash
+
+        old_cloid = OrderManager._generate_backstop_id("BTC-PERP", "short", "old-cfg")
+        stale_backstop = _open(order_id=777, client_order_id=old_cloid, price=51000.0)
+
+        cancel_calls = []
+
+        def mock_cancel(reqs):
+            cancel_calls.append(reqs)
+            return {"status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success"] * len(reqs)}}}
+
+        om._client.bulk_cancel = mock_cancel
+        om._client.bulk_orders = MagicMock(return_value={
+            "status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 999}}]}},
+        })
+
+        await om.reconcile_with_backstop(
+            "BTC-PERP", desired=[], current=[stale_backstop], mid_price=50000.0,
+            position=_pos(size=-0.1), anchor=50000.0, atr=500.0,
+            breakout_atr_distance=4.5, backstop_buffer_atr=1.0, config_hash="new-cfg",
+        )
+
+        oids = [r["oid"] for r in cancel_calls[0]]
+        assert 777 in oids
 
 
 # ===========================================================================
