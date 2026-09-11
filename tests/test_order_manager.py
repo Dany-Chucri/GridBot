@@ -2118,6 +2118,70 @@ class TestReconcileWithBackstop:
         assert oids.count(555) == 1
 
     @pytest.mark.asyncio
+    async def test_backstop_not_replaced_when_already_matching(self):
+        """An already-correct backstop (within the grid's reconcile
+        tolerance) is left resting, not cancelled and re-placed. Without
+        this, ATR (and so trigger_price) drifts by a tiny amount every
+        cycle and the backstop churns continuously for no reason, briefly
+        leaving the account's dead-man's-switch absent each time (cancel
+        and place are separate, non-atomic calls)."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._info.frontend_open_orders.return_value = []
+
+        config_hash = "cfgX"
+        backstop_cloid = OrderManager._generate_backstop_id("BTC-PERP", "short", config_hash)
+        # anchor=50000, atr=500, (4.5+1.0)*500 = 2750 -> trigger_price = 52750
+        existing = _open(order_id=555, client_order_id=backstop_cloid,
+                         price=52750.0, size=0.1)
+
+        await om.reconcile_with_backstop(
+            "BTC-PERP", desired=[], current=[existing], mid_price=50000.0,
+            position=_pos(size=-0.1), anchor=50000.0, atr=500.0,
+            breakout_atr_distance=4.5, backstop_buffer_atr=1.0, config_hash=config_hash,
+        )
+
+        om._client.bulk_cancel.assert_not_called()
+        om._client.bulk_orders.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_backstop_replaced_when_trigger_price_drifts(self):
+        """A backstop whose trigger price has drifted beyond tolerance
+        (e.g. a real ATR move) is still cancelled and replaced."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        config_hash = "cfgX"
+        backstop_cloid = OrderManager._generate_backstop_id("BTC-PERP", "short", config_hash)
+        om._info.frontend_open_orders.return_value = [
+            {"coin": "BTC", "oid": 555, "cloid": backstop_cloid}
+        ]
+        existing = _open(order_id=555, client_order_id=backstop_cloid,
+                         price=40000.0, size=0.1)  # far from the desired 52750
+
+        place_calls = []
+        om._client.bulk_cancel = MagicMock(return_value={
+            "status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+        })
+
+        def mock_place(reqs):
+            place_calls.append(reqs)
+            return {"status": "ok", "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 999}}]}}}
+        om._client.bulk_orders = mock_place
+
+        await om.reconcile_with_backstop(
+            "BTC-PERP", desired=[], current=[existing], mid_price=50000.0,
+            position=_pos(size=-0.1), anchor=50000.0, atr=500.0,
+            breakout_atr_distance=4.5, backstop_buffer_atr=1.0, config_hash=config_hash,
+        )
+
+        om._client.bulk_cancel.assert_called_once()
+        assert place_calls and place_calls[0][0]["limit_px"] == 52750.0
+
+    @pytest.mark.asyncio
     async def test_stale_backstop_from_old_config_hash_still_swept(self):
         """A backstop left over from a prior config_hash (e.g. after a
         re-anchor) is not protected, only the current config's backstop

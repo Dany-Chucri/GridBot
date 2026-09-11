@@ -265,22 +265,47 @@ class OrderManager:
         else:
             direction = "long" if pos_size > 0 else "short"
             is_buy = pos_size < 0
-            backstop_sz = round_to_size(
-                abs(pos_size), self._get_asset_config(symbol).sz_decimals
-            )
+            asset_cfg = self._get_asset_config(symbol)
+            backstop_sz = round_to_size(abs(pos_size), asset_cfg.sz_decimals)
             distance = (breakout_atr_distance + backstop_buffer_atr) * atr
             trigger_price = (anchor - distance) if pos_size > 0 else (anchor + distance)
-            trigger_price = round_to_tick(
-                trigger_price, self._get_asset_config(symbol).tick_size
-            )
+            trigger_price = round_to_tick(trigger_price, asset_cfg.tick_size)
             backstop_cloid = self._generate_backstop_id(symbol, direction, config_hash)
 
-            cancel_oids = await self._find_backstop_oids(symbol, backstop_cloid)
-            extra_cancels.extend(cancel_oids)
+            # Skip the cancel+replace entirely if an already-correct backstop
+            # is resting under this cloid, within the same price/size
+            # tolerance the grid reconcile uses (section 7.2). ATR (and so
+            # trigger_price) is recomputed from live data every cycle and
+            # drifts by a tiny amount continuously; without this the backstop
+            # churns on every reconcile for no functional reason, leaving the
+            # account's dead-man's-switch briefly absent (cancel and place
+            # are separate, non-atomic API calls) purely from that noise.
+            existing = next(
+                (o for o in current if o.client_order_id == backstop_cloid), None
+            )
+            price_tol = max(
+                trigger_price * asset_cfg.reconcile_price_tolerance_bps / 10_000,
+                asset_cfg.tick_size * 0.5,
+            )
+            size_tol = max(
+                backstop_sz * asset_cfg.reconcile_size_tolerance_pct,
+                10.0 ** -asset_cfg.sz_decimals,
+            )
+            backstop_matches = (
+                existing is not None
+                and abs(existing.price - trigger_price) <= price_tol
+                and abs(existing.size - backstop_sz) <= size_tol
+            )
+
+            if not backstop_matches:
+                cancel_oids = await self._find_backstop_oids(symbol, backstop_cloid)
+                extra_cancels.extend(cancel_oids)
 
             # Also cancel the opposite direction's backstop in case the
             # position flipped sign since the last update, otherwise that
             # stale, differently-cloid'd trigger is orphaned on the exchange.
+            # Unlike the current-direction backstop this is a rare cleanup
+            # (only fires right after a sign flip), so it always runs.
             other_direction = "short" if direction == "long" else "long"
             other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
             other_cancel_oids = await self._find_backstop_oids(symbol, other_cloid)
@@ -290,7 +315,7 @@ class OrderManager:
 
             # A position smaller than one lot cannot carry a valid backstop
             # order; the stale-backstop cancels above still run.
-            if backstop_sz > 0:
+            if backstop_sz > 0 and not backstop_matches:
                 extra_places.append({
                     "coin": coin,
                     "is_buy": is_buy,
