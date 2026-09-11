@@ -2217,6 +2217,79 @@ class TestReconcileWithBackstop:
 
 
 # ===========================================================================
+# Test: Rate-limit backoff (section 2.4)
+# ===========================================================================
+
+
+class TestRateLimitBackoff:
+    @pytest.mark.asyncio
+    async def test_cumulative_request_error_starts_backoff_and_skips_next_batch(self):
+        """A 'Too many cumulative requests sent' batch error must not be
+        retried immediately, that just spends more of a budget that isn't
+        there. The very next reconcile in the same window should skip
+        sending entirely rather than hitting the same error again."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._client.bulk_orders = MagicMock(return_value={
+            "status": "err",
+            "response": (
+                "Too many cumulative requests sent (13011 > 12916) for "
+                "cumulative volume traded $2917.69."
+            ),
+        })
+
+        desired = [_desired(client_order_id="0x" + "b" * 32, price=50000.0)]
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        assert om._client.bulk_orders.call_count == 1
+
+        # Second call within the backoff window must not touch the client.
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        assert om._client.bulk_orders.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unrelated_batch_error_does_not_trigger_backoff(self):
+        """A different 'err' response (e.g. malformed request) must not be
+        mistaken for the rate-limit condition and suppress future batches."""
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._client.bulk_orders = MagicMock(return_value={
+            "status": "err", "response": "Some other exchange error",
+        })
+
+        desired = [_desired(client_order_id="0x" + "b" * 32, price=50000.0)]
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        assert om._client.bulk_orders.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_backoff_clears_after_window_elapses(self):
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+        om._client.bulk_orders = MagicMock(return_value={
+            "status": "err",
+            "response": "Too many cumulative requests sent (1 > 0) for cumulative volume traded $0.",
+        })
+
+        desired = [_desired(client_order_id="0x" + "b" * 32, price=50000.0)]
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        assert om._client.bulk_orders.call_count == 1
+
+        om._rate_limited_until_ms = time.time() * 1000 - 1  # force expiry
+        om._client.bulk_orders.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}},
+        }
+        await om.reconcile("BTC-PERP", desired, [], mid_price=50000.0)
+        assert om._client.bulk_orders.call_count == 2
+
+
+# ===========================================================================
 # Test: Structured ALO error matching (review fix #7)
 # ===========================================================================
 

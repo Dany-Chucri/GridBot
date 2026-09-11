@@ -45,6 +45,19 @@ _DEAD_OID_TTL_SECONDS = 60.0
 # almost certainly failed and a retry is the safer choice.
 _PLACED_CLOID_TTL_SECONDS = 30.0
 
+# Hyperliquid's address-level request budget grows with cumulative volume
+# traded (section 2.4). Once exhausted, every batch fails until enough
+# volume trades to free up headroom, immediately retrying just spends more
+# of a budget that isn't there. This is the exact substring HL's error puts
+# in the batch response when that budget is exhausted.
+_RATE_LIMIT_ERROR_MARKER = "Too many cumulative requests sent"
+# Passive backoff applied once that condition is seen, mirrors the
+# maintenance-mode wait (section 2.5) for a different, similarly transient
+# and non-bug, exchange-side condition. Short enough that a routine reconcile
+# resumes quickly once volume frees up headroom, long enough to meaningfully
+# cut the retry rate during a sustained shortage.
+_RATE_LIMIT_BACKOFF_SECONDS = 5.0
+
 
 class OrderManager:
     """Manages all exchange order operations via batch API calls."""
@@ -72,6 +85,10 @@ class OrderManager:
         # it a second time, leaving two live orders on one cloid. cloid ->
         # (oid, monotonic_ts); cleared once the oid shows up in `current`.
         self._placed_cloids: dict[str, tuple[int, float]] = {}
+        # Monotonic-clock deadline (time.time()*1000) until which routine
+        # batch submission is skipped, set when a batch fails on the
+        # address-level request budget (see _RATE_LIMIT_ERROR_MARKER).
+        self._rate_limited_until_ms: float = 0.0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -81,6 +98,13 @@ class OrderManager:
     def _to_coin(symbol: str) -> str:
         """'BTC-PERP' -> 'BTC'."""
         return symbol.replace("-PERP", "").upper()
+
+    def _note_if_rate_limited(self, response_text: Any) -> None:
+        """Start a passive backoff window if `response_text` is HL's
+        address-level request-budget error, so the next reconcile skips
+        retrying immediately into the same shortage (section 2.4)."""
+        if _RATE_LIMIT_ERROR_MARKER in str(response_text):
+            self._rate_limited_until_ms = time.time() * 1000 + _RATE_LIMIT_BACKOFF_SECONDS * 1000
 
     @staticmethod
     def _generate_order_id(
@@ -260,7 +284,7 @@ class OrderManager:
             # Cancel backstops for both directions
             for d in ("long", "short"):
                 cloid = self._generate_backstop_id(symbol, d, config_hash)
-                cancel_oids = await self._find_backstop_oids(symbol, cloid)
+                cancel_oids = self._find_backstop_oids_in_view(current, coin, cloid)
                 extra_cancels.extend(cancel_oids)
         else:
             direction = "long" if pos_size > 0 else "short"
@@ -298,7 +322,7 @@ class OrderManager:
             )
 
             if not backstop_matches:
-                cancel_oids = await self._find_backstop_oids(symbol, backstop_cloid)
+                cancel_oids = self._find_backstop_oids_in_view(current, coin, backstop_cloid)
                 extra_cancels.extend(cancel_oids)
 
             # Also cancel the opposite direction's backstop in case the
@@ -308,7 +332,7 @@ class OrderManager:
             # (only fires right after a sign flip), so it always runs.
             other_direction = "short" if direction == "long" else "long"
             other_cloid = self._generate_backstop_id(symbol, other_direction, config_hash)
-            other_cancel_oids = await self._find_backstop_oids(symbol, other_cloid)
+            other_cancel_oids = self._find_backstop_oids_in_view(current, coin, other_cloid)
             extra_cancels.extend(other_cancel_oids)
 
             from hyperliquid.utils.types import Cloid
@@ -350,26 +374,24 @@ class OrderManager:
             extra_place_requests=extra_places,
         )
 
-    async def _find_backstop_oids(
-        self, symbol: str, expected_cloid: str
+    @staticmethod
+    def _find_backstop_oids_in_view(
+        current: list[OpenOrder], coin: str, expected_cloid: str
     ) -> list[dict]:
-        """Find cancel requests for backstop orders matching the expected cloid."""
-        loop = asyncio.get_running_loop()
-        coin = self._to_coin(symbol)
-        try:
-            all_open = await loop.run_in_executor(
-                None,
-                self._info.frontend_open_orders,
-                self._wallet_address,
-            )
-            return [
-                {"coin": coin, "oid": int(o["oid"])}
-                for o in all_open
-                if o.get("coin") == coin and o.get("cloid", "") == expected_cloid
-            ]
-        except Exception:
-            logger.exception("Failed to query backstop orders for %s", symbol)
-            return []
+        """Find cancel requests for backstop orders matching the expected
+        cloid, read from the already-fetched open-orders view (`current`)
+        instead of a fresh REST call.
+
+        `reconcile_with_backstop` runs every cycle a position is open, and
+        the WS-primary view (section 4.3) already carries resting trigger
+        orders, a separate `frontend_open_orders` round trip per backstop
+        update spent request budget (section 2.4) for data already on hand.
+        """
+        return [
+            {"coin": coin, "oid": o.order_id}
+            for o in current
+            if o.client_order_id == expected_cloid
+        ]
 
     @staticmethod
     def _order_matches(
@@ -609,6 +631,14 @@ class OrderManager:
             extra_place_requests: Additional raw placement dicts (e.g., backstop)
                 to append after grid placements.
         """
+        now_ms = time.time() * 1000
+        if now_ms < self._rate_limited_until_ms:
+            logger.info(
+                "Skipping batch for %s, request-budget backoff active for %.1fs more",
+                symbol, (self._rate_limited_until_ms - now_ms) / 1000,
+            )
+            return
+
         loop = asyncio.get_running_loop()
 
         # Step 1: Batch cancel (grid orders + extras like backstop)
@@ -761,7 +791,9 @@ class OrderManager:
                         "Cancel batch: %d succeeded, %d failed", success, failed
                     )
         elif status == "err":
-            logger.error("Cancel batch error: %s", result.get("response", ""))
+            response_text = result.get("response", "")
+            logger.error("Cancel batch error: %s", response_text)
+            self._note_if_rate_limited(response_text)
 
     @staticmethod
     def _is_alo_rejection(status_entry: Any) -> bool:
@@ -869,12 +901,14 @@ class OrderManager:
                             extra.get("coin", "?"), s,
                         )
         elif status == "err":
-            logger.error("Place batch error: %s", result.get("response", ""))
+            response_text = result.get("response", "")
+            logger.error("Place batch error: %s", response_text)
+            self._note_if_rate_limited(response_text)
             if extra_requests:
                 logger.warning(
                     "Backstop order update failed for batch errored, "
                     "position may be unprotected: %s",
-                    result.get("response", ""),
+                    response_text,
                 )
 
         return retries
