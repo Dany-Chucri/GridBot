@@ -992,12 +992,55 @@ class Supervisor:
             _get_depth,
             _get_position,
         )
+        # Refresh position post-flatten before deciding what's left to
+        # protect, execute_flatten's own last reading may already be stale.
+        state.position = await self._market_data.fetch_position(symbol)
         if not fully_flattened:
             logger.error("Flatten incomplete for %s, entering DEAD", symbol)
+            await self._protect_residual_after_failed_flatten(symbol, state, asset_cfg)
             state.bot_state = BotState.DEAD
             await self._send_alert("CRITICAL", f"Flatten residual for {symbol}")
-        # Refresh position post-flatten
-        state.position = await self._market_data.fetch_position(symbol)
+
+    async def _protect_residual_after_failed_flatten(
+        self, symbol: str, state: AssetState, asset_cfg: AssetConfig,
+    ) -> None:
+        """Ensure the dead-man's-switch backstop (section 6.8) covers
+        whatever position survives a failed flatten.
+
+        cancel_all_orders wiped the prior backstop before the flatten
+        attempt (section 6.7 step 1 cancels everything ahead of the IOCs),
+        and DEAD state skips the normal per-cycle reconcile_with_backstop
+        call, so without this the residual would sit fully unprotected
+        indefinitely. CLAUDE.md: "Backstop stop-losses must exist
+        server-side for every open position."
+        """
+        position = state.position
+        if position is None or abs(position.size) < 1e-12:
+            return
+
+        grid_cfg = state.grid_config
+        vol_metrics = state.vol_metrics
+        if grid_cfg is None or vol_metrics is None or vol_metrics.atr <= 0:
+            logger.critical(
+                "Cannot place backstop for %s residual %.6f: no anchor/ATR "
+                "available, position is fully unprotected, manual "
+                "intervention required",
+                symbol, position.size,
+            )
+            return
+
+        config_hash = GridEngine.compute_config_hash(
+            grid_cfg.anchor, grid_cfg.range_atr, grid_cfg.step_bps
+        )
+        await self._order_manager.update_backstop(
+            symbol,
+            position,
+            grid_cfg.anchor,
+            vol_metrics.atr,
+            asset_cfg.breakout_atr_distance,
+            asset_cfg.backstop_buffer_atr,
+            config_hash=config_hash,
+        )
 
     # ------------------------------------------------------------------
     # REST reconciliation (section 4.3, backup path)

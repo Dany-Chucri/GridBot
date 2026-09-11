@@ -1069,6 +1069,90 @@ class TestRiskActions:
         assert state.bot_state == BotState.DEAD
 
     @pytest.mark.asyncio
+    async def test_failed_flatten_backstops_residual_before_dead(self):
+        """A failed flatten must not leave the surviving position naked:
+        cancel_all_orders already wiped the prior backstop, and DEAD skips
+        the normal per-cycle reconcile_with_backstop, so this is the only
+        remaining chance to protect it (section 6.8 / CLAUDE.md invariant)."""
+        om = _mock_order_manager()
+        om.execute_flatten = AsyncMock(return_value=False)
+        md = _mock_market_data()
+        residual = Position(
+            symbol="BTC-PERP", size=0.00097, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        md.fetch_position = AsyncMock(return_value=residual)
+        sup = _make_supervisor(order_manager=om, market_data=md)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = Position(
+            symbol=symbol, size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        state.grid_config = GridConfig(
+            symbol=symbol, anchor=79435.5, range_atr=2.5, step_bps=20.0, epoch=3,
+        )
+        state.vol_metrics = VolMetrics(
+            realized_vol=0.5, atr=100.0, spread_bps=2.0,
+            rolling_return_1m=0.0, rolling_return_5m=0.0,
+        )
+
+        await sup._handle_risk_action(
+            symbol,
+            RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="breakout",
+                details={"type": "distance"},
+            ),
+            asset_cfg,
+        )
+
+        assert state.bot_state == BotState.DEAD
+        om.update_backstop.assert_awaited_once()
+        call = om.update_backstop.await_args
+        assert call.args[0] == symbol
+        assert call.args[1] is residual
+        assert call.args[2] == state.grid_config.anchor
+        assert call.args[3] == state.vol_metrics.atr
+
+    @pytest.mark.asyncio
+    async def test_failed_flatten_skips_backstop_without_anchor(self):
+        """No grid_config/vol_metrics means no valid trigger price can be
+        computed, don't fabricate one, just alert loudly."""
+        om = _mock_order_manager()
+        om.execute_flatten = AsyncMock(return_value=False)
+        md = _mock_market_data()
+        residual = Position(
+            symbol="BTC-PERP", size=0.00097, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        md.fetch_position = AsyncMock(return_value=residual)
+        sup = _make_supervisor(order_manager=om, market_data=md)
+        symbol = sup._config.assets[0].symbol
+        asset_cfg = sup._config.assets[0]
+        state = sup._asset_states[symbol]
+        state.position = Position(
+            symbol=symbol, size=0.5, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        state.grid_config = None
+        state.vol_metrics = None
+
+        await sup._handle_risk_action(
+            symbol,
+            RiskDecision(
+                action=RiskAction.CANCEL_AND_FLATTEN,
+                reason="breakout",
+                details={"type": "distance"},
+            ),
+            asset_cfg,
+        )
+
+        assert state.bot_state == BotState.DEAD
+        om.update_backstop.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_pause_grid_does_not_cancel(self):
         om = _mock_order_manager()
         sup = _make_supervisor(order_manager=om)
