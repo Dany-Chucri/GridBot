@@ -726,14 +726,27 @@ class Supervisor:
                 state.bot_state = BotState.SHUTTING_DOWN
 
         # 2. Batch cancel per asset (no flatten, section 4.5)
+        unconfirmed_symbols: list[str] = []
         for asset_cfg in self._config.assets:
             try:
-                await self._order_manager.cancel_all_orders(asset_cfg.symbol)
+                confirmed = await self._order_manager.cancel_all_orders(asset_cfg.symbol)
             except Exception:
                 logger.exception(
                     "Failed to cancel orders for %s during shutdown",
                     asset_cfg.symbol,
                 )
+                confirmed = False
+            if not confirmed:
+                unconfirmed_symbols.append(asset_cfg.symbol)
+
+        if unconfirmed_symbols:
+            await self._send_alert(
+                "CRITICAL",
+                "Shutdown could not confirm orders are cancelled for: "
+                f"{', '.join(unconfirmed_symbols)}. Orders and any open "
+                "position may still be live on the exchange with no bot "
+                "running to manage them, check the exchange UI directly.",
+            )
 
         # 3. Stop fill pump
         if self._fill_task is not None and not self._fill_task.done():
@@ -764,7 +777,13 @@ class Supervisor:
         except Exception:
             logger.exception("StateStore close failed")
 
-        logger.info("Shutdown complete")
+        if unconfirmed_symbols:
+            logger.critical(
+                "Shutdown complete WITH UNCANCELLED ORDERS for: %s",
+                ", ".join(unconfirmed_symbols),
+            )
+        else:
+            logger.info("Shutdown complete")
 
     # ------------------------------------------------------------------
     # Risk action handling

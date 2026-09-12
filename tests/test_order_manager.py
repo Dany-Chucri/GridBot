@@ -834,15 +834,20 @@ class TestCancelAll:
         om._info = MagicMock()
         om._wallet_address = "0xtest"
 
-        om._info.open_orders.return_value = [
-            {"coin": "BTC", "oid": 1, "limitPx": "50000", "sz": "0.1", "side": "B"},
-            {"coin": "BTC", "oid": 2, "limitPx": "51000", "sz": "0.1", "side": "A"},
-            {"coin": "ETH", "oid": 3, "limitPx": "3000", "sz": "1.0", "side": "B"},
+        om._info.open_orders.side_effect = [
+            [
+                {"coin": "BTC", "oid": 1, "limitPx": "50000", "sz": "0.1", "side": "B"},
+                {"coin": "BTC", "oid": 2, "limitPx": "51000", "sz": "0.1", "side": "A"},
+                {"coin": "ETH", "oid": 3, "limitPx": "3000", "sz": "1.0", "side": "B"},
+            ],
+            # Confirmation read on the next loop iteration, after the cancel applied.
+            [{"coin": "ETH", "oid": 3, "limitPx": "3000", "sz": "1.0", "side": "B"}],
         ]
         om._client.bulk_cancel.return_value = {"status": "ok", "response": {"type": "cancel", "data": {"statuses": ["success", "success"]}}}
 
-        await om.cancel_all_orders("BTC-PERP")
+        confirmed = await om.cancel_all_orders("BTC-PERP")
 
+        assert confirmed is True
         om._client.bulk_cancel.assert_called_once()
         cancel_reqs = om._client.bulk_cancel.call_args[0][0]
         assert len(cancel_reqs) == 2  # Only BTC orders
@@ -858,9 +863,30 @@ class TestCancelAll:
 
         om._info.open_orders.return_value = []
 
-        await om.cancel_all_orders("BTC-PERP")
+        confirmed = await om.cancel_all_orders("BTC-PERP")
 
+        assert confirmed is True
         om._client.bulk_cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_orders_unconfirmed_after_retries(self):
+        """Returns False when the exchange keeps failing bulk_cancel and
+        never reports the symbol's orders as gone within the retry budget.
+        """
+        om = _om()
+        om._client = MagicMock()
+        om._info = MagicMock()
+        om._wallet_address = "0xtest"
+
+        om._info.open_orders.return_value = [
+            {"coin": "BTC", "oid": 1, "limitPx": "50000", "sz": "0.1", "side": "B"},
+        ]
+        om._client.bulk_cancel.side_effect = Exception("(500, 'null')")
+
+        with patch("gridbot.order_manager.asyncio.sleep", new=AsyncMock()):
+            confirmed = await om.cancel_all_orders("BTC-PERP")
+
+        assert confirmed is False
 
 
 # ===========================================================================

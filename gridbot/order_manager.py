@@ -58,6 +58,13 @@ _RATE_LIMIT_ERROR_MARKER = "Too many cumulative requests sent"
 # cut the retry rate during a sustained shortage.
 _RATE_LIMIT_BACKOFF_SECONDS = 5.0
 
+# cancel_all_orders (shutdown path) retries against a fresh exchange read
+# rather than trusting a single attempt, since a bulk_cancel call can raise
+# even after the exchange applied it. Bounded so shutdown cannot hang
+# indefinitely against a genuinely down exchange.
+_SHUTDOWN_CANCEL_MAX_ATTEMPTS = 5
+_SHUTDOWN_CANCEL_RETRY_PAUSE_SECONDS = 2.0
+
 
 class OrderManager:
     """Manages all exchange order operations via batch API calls."""
@@ -690,18 +697,61 @@ class OrderManager:
                         break
                     pending = alo_retries
                 except Exception:
-                    logger.exception(
-                        "Batch place failed (%d orders, attempt %d)",
-                        len(order_requests),
-                        attempt,
-                    )
-                    # Unlike per-order rejections (handled via response status
-                    # above), this means the batch call itself never reached
-                    # the exchange, e.g. a malformed request or a network
-                    # error. Re-raise so the cycle-level handler in
+                    # A raised bulk_orders call does not guarantee the
+                    # exchange never applied it, e.g. a 500 with no body can
+                    # follow a request the exchange already accepted. Check
+                    # before logging so a landed order isn't misreported as
+                    # never having reached the exchange.
+                    landed = await self._check_cloids_landed(order_requests, symbol)
+                    if landed:
+                        logger.exception(
+                            "Batch place raised for %s (%d orders, attempt %d), "
+                            "but %d order(s) reached the exchange despite the "
+                            "error: %s",
+                            symbol, len(order_requests), attempt,
+                            len(landed), sorted(landed),
+                        )
+                    else:
+                        logger.exception(
+                            "Batch place failed (%d orders, attempt %d)",
+                            len(order_requests),
+                            attempt,
+                        )
+                    # Re-raise regardless, landed or not this attempt did not
+                    # complete normally, so the cycle-level handler in
                     # Supervisor counts it toward the consecutive-error kill
                     # switch instead of silently retrying forever.
                     raise
+
+    async def _check_cloids_landed(
+        self, order_requests: list[dict[str, Any]], symbol: str
+    ) -> set[str]:
+        """Best-effort check for which of these requests' cloids are now
+        resting on the exchange, used after a bulk_orders call raises.
+
+        A raised placement call is not proof the exchange never applied it,
+        so this reads current exchange state directly rather than trusting
+        the absence of a parsed response.
+        """
+        cloids = {
+            str(req["cloid"]) for req in order_requests if req.get("cloid") is not None
+        }
+        if not cloids or self._info is None:
+            return set()
+        try:
+            loop = asyncio.get_running_loop()
+            all_open = await loop.run_in_executor(
+                None, self._info.open_orders, self._wallet_address
+            )
+        except Exception:
+            return set()
+        coin = self._to_coin(symbol)
+        resting = {
+            str(o.get("cloid"))
+            for o in all_open
+            if o.get("coin") == coin and o.get("cloid")
+        }
+        return cloids & resting
 
     def _build_place_request(self, order: DesiredOrder) -> dict[str, Any]:
         """Build a single Hyperliquid placement request dict."""
@@ -989,48 +1039,78 @@ class OrderManager:
         except Exception:
             logger.exception("cancel_orders failed for %s", symbol)
 
-    async def cancel_all_orders(self, symbol: str) -> None:
-        """Cancel all resting orders for an asset (batch cancel)."""
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """Cancel all resting orders for an asset (batch cancel).
+
+        Retries against a fresh exchange read rather than trusting a single
+        bulk_cancel attempt, since that call can raise (e.g. a 500 with no
+        body) even after the exchange applied it. Returns True only once
+        the exchange itself confirms zero open orders remain for this
+        symbol; False if the attempt budget is exhausted without that
+        confirmation, e.g. a genuine exchange outage.
+        """
         loop = asyncio.get_running_loop()
         coin = self._to_coin(symbol)
 
+        for attempt in range(_SHUTDOWN_CANCEL_MAX_ATTEMPTS):
+            all_open = await loop.run_in_executor(
+                None, self._info.open_orders, self._wallet_address
+            )
+            symbol_orders = [o for o in all_open if o.get("coin") == coin]
+            if not symbol_orders:
+                if attempt == 0:
+                    logger.info("No open orders to cancel for %s", symbol)
+                else:
+                    logger.info(
+                        "Confirmed no open orders remain for %s (attempt %d)",
+                        symbol, attempt + 1,
+                    )
+                return True
+
+            cancel_requests = [
+                {"coin": coin, "oid": int(o["oid"])} for o in symbol_orders
+            ]
+
+            try:
+                result = await loop.run_in_executor(
+                    None, self._client.bulk_cancel, cancel_requests
+                )
+                logger.info(
+                    "Cancelled %d orders for %s (attempt %d)",
+                    len(cancel_requests), symbol, attempt + 1,
+                )
+                self._parse_cancel_result(
+                    result,
+                    [
+                        OpenOrder(
+                            order_id=int(o["oid"]),
+                            client_order_id="",
+                            symbol=symbol,
+                            price=float(o.get("limitPx", 0)),
+                            size=float(o.get("sz", 0)),
+                            remaining=float(o.get("sz", 0)),
+                            side=OrderSide.BUY if o.get("side") == "B" else OrderSide.SELL,
+                        )
+                        for o in symbol_orders
+                    ],
+                )
+            except Exception:
+                logger.exception(
+                    "cancel_all_orders failed for %s (attempt %d/%d)",
+                    symbol, attempt + 1, _SHUTDOWN_CANCEL_MAX_ATTEMPTS,
+                )
+
+            if attempt < _SHUTDOWN_CANCEL_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_SHUTDOWN_CANCEL_RETRY_PAUSE_SECONDS)
+
+        # Last attempt above may have applied even though the exchange read
+        # that follows it only happens on the next loop iteration, which
+        # never runs after the final attempt. Check once more before
+        # reporting failure.
         all_open = await loop.run_in_executor(
             None, self._info.open_orders, self._wallet_address
         )
-
-        symbol_orders = [o for o in all_open if o.get("coin") == coin]
-        if not symbol_orders:
-            logger.info("No open orders to cancel for %s", symbol)
-            return
-
-        cancel_requests = [
-            {"coin": coin, "oid": int(o["oid"])} for o in symbol_orders
-        ]
-
-        try:
-            result = await loop.run_in_executor(
-                None, self._client.bulk_cancel, cancel_requests
-            )
-            logger.info(
-                "Cancelled %d orders for %s", len(cancel_requests), symbol
-            )
-            self._parse_cancel_result(
-                result,
-                [
-                    OpenOrder(
-                        order_id=int(o["oid"]),
-                        client_order_id="",
-                        symbol=symbol,
-                        price=float(o.get("limitPx", 0)),
-                        size=float(o.get("sz", 0)),
-                        remaining=float(o.get("sz", 0)),
-                        side=OrderSide.BUY if o.get("side") == "B" else OrderSide.SELL,
-                    )
-                    for o in symbol_orders
-                ],
-            )
-        except Exception:
-            logger.exception("cancel_all_orders failed for %s", symbol)
+        return not any(o.get("coin") == coin for o in all_open)
 
     # ------------------------------------------------------------------
     # Post-Only rejection handling (section 7.4)
