@@ -2303,6 +2303,15 @@ class TestAloErrorMatching:
             {"error": "Post only order would have been filled immediately."}
         ) is True
 
+    def test_dict_error_immediately_matched(self):
+        """Hyperliquid's actual production wording for a post-only cross,
+        distinct from the "would have been filled" phrasing above. Missing
+        this let real rejections fall through to the generic failure path
+        and skip the nudge-and-retry loop (section 7.4) entirely."""
+        assert OrderManager._is_alo_rejection(
+            {"error": "Post only order would have immediately matched, bbo was 76969@76970. asset=3"}
+        ) is True
+
     def test_dict_non_alo_error(self):
         assert OrderManager._is_alo_rejection({"error": "InsufficientMargin"}) is False
 

@@ -20,6 +20,7 @@ Persisted data (section 4.4):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -241,6 +242,14 @@ class StateStore:
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        # Serializes all writes on the shared connection. The main per-symbol
+        # cycle loop and the fill pump (supervisor.py's _fill_pump) run as
+        # separate concurrent asyncio tasks and both write through this one
+        # connection; without a lock, one coroutine's multi-statement
+        # transaction (e.g. save_pending_flips' BEGIN..commit) can interleave
+        # with another's, producing "cannot start a transaction within a
+        # transaction" or, worse, a premature commit of half-written state.
+        self._write_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -318,21 +327,22 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def save_grid_config(self, config: GridConfig) -> None:
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO grid_config
-               (symbol, anchor, range_atr, step_bps, epoch, config_hash, updated_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                config.symbol,
-                config.anchor,
-                config.range_atr,
-                config.step_bps,
-                config.epoch,
-                _compute_config_hash(config),
-                _now_ms(),
-            ),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO grid_config
+                   (symbol, anchor, range_atr, step_bps, epoch, config_hash, updated_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    config.symbol,
+                    config.anchor,
+                    config.range_atr,
+                    config.step_bps,
+                    config.epoch,
+                    _compute_config_hash(config),
+                    _now_ms(),
+                ),
+            )
+            await self._conn.commit()
 
     async def delete_grid_config(self, symbol: str) -> None:
         """Drop the persisted anchor for `symbol`.
@@ -341,10 +351,11 @@ class StateStore:
         must not survive a restart during cooldown, or the distance-breakout
         check re-trips against it forever (section 6.3).
         """
-        await self._conn.execute(
-            "DELETE FROM grid_config WHERE symbol = ?", (symbol,)
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                "DELETE FROM grid_config WHERE symbol = ?", (symbol,)
+            )
+            await self._conn.commit()
 
     async def load_grid_config(self, symbol: str) -> GridConfig | None:
         cursor = await self._conn.execute(
@@ -367,20 +378,21 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def save_position(self, position: Position) -> None:
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO positions
-               (symbol, size, avg_entry_price, unrealized_pnl, liq_price, updated_ms)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                position.symbol,
-                position.size,
-                position.avg_entry_price,
-                position.unrealized_pnl,
-                position.liquidation_price,
-                _now_ms(),
-            ),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO positions
+                   (symbol, size, avg_entry_price, unrealized_pnl, liq_price, updated_ms)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    position.symbol,
+                    position.size,
+                    position.avg_entry_price,
+                    position.unrealized_pnl,
+                    position.liquidation_price,
+                    _now_ms(),
+                ),
+            )
+            await self._conn.commit()
 
     async def load_position(self, symbol: str) -> Position | None:
         cursor = await self._conn.execute(
@@ -412,6 +424,12 @@ class StateStore:
         not take down the reconciliation cycle over a caching concern, keep
         the last-seen entry and log it as an anomaly worth investigating.
         """
+        async with self._write_lock:
+            await self._save_open_orders_locked(symbol, orders)
+
+    async def _save_open_orders_locked(
+        self, symbol: str, orders: list[OpenOrder]
+    ) -> None:
         deduped: dict[str, OpenOrder] = {}
         for order in orders:
             dupe = deduped.get(order.client_order_id)
@@ -474,25 +492,26 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def record_fill(self, fill: Fill) -> None:
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO fills
-               (fill_id, order_id, client_order_id, symbol, price, size, side, fee, timestamp_ms, is_maker, is_partial)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                fill.fill_id,
-                fill.order_id,
-                fill.client_order_id,
-                fill.symbol,
-                fill.price,
-                fill.size,
-                fill.side.value,
-                fill.fee,
-                fill.timestamp_ms,
-                int(fill.is_maker),
-                int(fill.is_partial),
-            ),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO fills
+                   (fill_id, order_id, client_order_id, symbol, price, size, side, fee, timestamp_ms, is_maker, is_partial)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    fill.fill_id,
+                    fill.order_id,
+                    fill.client_order_id,
+                    fill.symbol,
+                    fill.price,
+                    fill.size,
+                    fill.side.value,
+                    fill.fee,
+                    fill.timestamp_ms,
+                    int(fill.is_maker),
+                    int(fill.is_partial),
+                ),
+            )
+            await self._conn.commit()
 
     async def get_fills(self, symbol: str, since_ms: int | None = None) -> list[Fill]:
         if since_ms is not None:
@@ -528,12 +547,13 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def save_regime(self, symbol: str, regime: Regime, timestamp_ms: int) -> None:
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO regime (symbol, regime, transition_ms)
-               VALUES (?, ?, ?)""",
-            (symbol, regime.name, timestamp_ms),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO regime (symbol, regime, transition_ms)
+                   VALUES (?, ?, ?)""",
+                (symbol, regime.name, timestamp_ms),
+            )
+            await self._conn.commit()
 
     async def load_regime(self, symbol: str) -> tuple[Regime, int] | None:
         """Returns (regime, transition_timestamp_ms) or None."""
@@ -551,22 +571,23 @@ class StateStore:
     # ------------------------------------------------------------------
 
     async def save_pending_flips(self, symbol: str, flips: list[PendingFlip]) -> None:
-        await self._conn.execute("BEGIN")
-        try:
-            await self._conn.execute(
-                "DELETE FROM pending_flips WHERE symbol = ?", (symbol,)
-            )
-            for flip in flips:
+        async with self._write_lock:
+            await self._conn.execute("BEGIN")
+            try:
                 await self._conn.execute(
-                    """INSERT INTO pending_flips
-                       (symbol, price, side, size, originating_fill_id)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (symbol, flip.price, flip.side.value, flip.size, flip.originating_fill_id),
+                    "DELETE FROM pending_flips WHERE symbol = ?", (symbol,)
                 )
-            await self._conn.commit()
-        except BaseException:
-            await self._conn.rollback()
-            raise
+                for flip in flips:
+                    await self._conn.execute(
+                        """INSERT INTO pending_flips
+                           (symbol, price, side, size, originating_fill_id)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (symbol, flip.price, flip.side.value, flip.size, flip.originating_fill_id),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def load_pending_flips(self, symbol: str) -> list[PendingFlip]:
         cursor = await self._conn.execute(
@@ -590,12 +611,13 @@ class StateStore:
 
     async def save_bot_state(self, symbol: str, state: AssetState) -> None:
         """Persist full asset state snapshot (for restart recovery)."""
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO bot_state (symbol, state_json, updated_ms)
-               VALUES (?, ?, ?)""",
-            (symbol, _serialize_asset_state(state), _now_ms()),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO bot_state (symbol, state_json, updated_ms)
+                   VALUES (?, ?, ?)""",
+                (symbol, _serialize_asset_state(state), _now_ms()),
+            )
+            await self._conn.commit()
 
     async def load_bot_state(self, symbol: str) -> AssetState | None:
         cursor = await self._conn.execute(
@@ -608,12 +630,13 @@ class StateStore:
         return _deserialize_asset_state(row["state_json"])
 
     async def update_heartbeat(self, symbol: str, timestamp_ms: int) -> None:
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO heartbeat (symbol, timestamp_ms)
-               VALUES (?, ?)""",
-            (symbol, timestamp_ms),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO heartbeat (symbol, timestamp_ms)
+                   VALUES (?, ?)""",
+                (symbol, timestamp_ms),
+            )
+            await self._conn.commit()
 
     async def get_last_heartbeat(self, symbol: str) -> int | None:
         cursor = await self._conn.execute(
@@ -637,16 +660,17 @@ class StateStore:
         Raw observed samples only, no interpolation of gaps. RiskManager
         decides on load whether a gap makes the pre-gap samples unusable.
         """
-        await self._conn.execute(
-            """INSERT OR REPLACE INTO vol_history (symbol, timestamp_ms, realized_vol)
-               VALUES (?, ?, ?)""",
-            (symbol, timestamp_ms, realized_vol),
-        )
-        await self._conn.execute(
-            "DELETE FROM vol_history WHERE symbol = ? AND timestamp_ms < ?",
-            (symbol, timestamp_ms - _7D_MS),
-        )
-        await self._conn.commit()
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT OR REPLACE INTO vol_history (symbol, timestamp_ms, realized_vol)
+                   VALUES (?, ?, ?)""",
+                (symbol, timestamp_ms, realized_vol),
+            )
+            await self._conn.execute(
+                "DELETE FROM vol_history WHERE symbol = ? AND timestamp_ms < ?",
+                (symbol, timestamp_ms - _7D_MS),
+            )
+            await self._conn.commit()
 
     async def load_vol_history(self, symbol: str) -> list[tuple[int, float]]:
         cursor = await self._conn.execute(

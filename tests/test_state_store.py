@@ -753,3 +753,40 @@ class TestWALConcurrency:
         assert len(fills) == 20
 
         await s.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_transactional_writes_dont_collide(self, tmp_path: Path):
+        """The main cycle loop and the fill pump (supervisor.py) run as
+        separate concurrent asyncio tasks and share one StateStore/connection.
+        save_open_orders and save_pending_flips both run explicit multi-
+        statement transactions (BEGIN..commit); interleaved without a lock,
+        one task's BEGIN can land while another's transaction is still open,
+        raising 'cannot start a transaction within a transaction' (observed
+        live from _fill_pump -> save_pending_flips). Without the write lock
+        this reliably reproduces because each awaited execute() yields
+        control back to the event loop."""
+        db_path = tmp_path / "test.db"
+        s = StateStore(db_path=db_path)
+        await s.initialize()
+
+        orders = [_open_order(f"0x{i:032x}", price=50000.0 + i) for i in range(5)]
+        flips = [
+            PendingFlip(price=50000.0 + i, side=OrderSide.SELL, size=0.1,
+                        originating_fill_id=f"f{i}")
+            for i in range(5)
+        ]
+
+        async def hammer_orders():
+            for _ in range(20):
+                await s.save_open_orders("BTC-PERP", orders)
+
+        async def hammer_flips():
+            for _ in range(20):
+                await s.save_pending_flips("BTC-PERP", flips)
+
+        await asyncio.gather(hammer_orders(), hammer_flips())
+
+        assert len(await s.load_open_orders("BTC-PERP")) == 5
+        assert len(await s.load_pending_flips("BTC-PERP")) == 5
+
+        await s.close()

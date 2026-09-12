@@ -797,10 +797,24 @@ class OrderManager:
 
     @staticmethod
     def _is_alo_rejection(status_entry: Any) -> bool:
-        """Check if a per-order status indicates an ALO (Post-Only) rejection."""
+        """Check if a per-order status indicates an ALO (Post-Only) rejection.
+
+        Hyperliquid's actual wording is "Post only order would have
+        immediately matched, bbo was X@Y. asset=N", not the "would have been
+        filled" phrasing this originally checked for. That mismatch meant a
+        real ALO rejection was never recognized as one, section 7.4's nudge-
+        and-retry never engaged, and the identical doomed price got
+        resubmitted every reconcile cycle indefinitely instead of being
+        nudged or dropped, silently burning the request budget (section 2.4)
+        for a level that had no chance of filling.
+        """
         if isinstance(status_entry, dict):
-            error = status_entry.get("error", "")
-            return "BadAloPx" in error or "would have been filled" in error.lower()
+            error = status_entry.get("error", "").lower()
+            return (
+                "badalopx" in error
+                or "would have been filled" in error
+                or "would have immediately matched" in error
+            )
         s = str(status_entry)
         return "BadAloPx" in s
 
