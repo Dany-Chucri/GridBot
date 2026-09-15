@@ -880,6 +880,12 @@ HL rejects a Post-Only order if it would immediately match (common "BadAloPx" er
 
 **Why this happens:** The grid computes levels based on a price snapshot, but by the time the order reaches the exchange, the book may have moved. Levels very close to mid price are most susceptible.
 
+**Pre-flight crossing check (before the request is ever sent):** Grid levels are anchor-relative and fixed until a re-anchor (section 5.1) recomputes them. In a slow, sustained drift that never satisfies all four re-anchor conditions at once, the ladder's innermost level can sit on the wrong side of the book for many consecutive cycles, not just one. Retrying it via steps 1-3 above every single cycle spends `post_only_max_retries + 1` requests against Hyperliquid's address-level request budget (section 2.4) on a placement that is certain to fail, since the desired price for that level does not change between cycles when the anchor hasn't moved.
+
+Before building the placement batch, OrderManager compares each desired order's price against the current best bid/ask (from MarketData's WS-primary `l2Book` feed, the same source used for mid price): a buy at or above the best ask, or a sell at or below the best bid, is dropped from the batch instead of being sent. The dropped level is retried next cycle exactly as an exhausted-retry level already is, at zero request cost instead of `post_only_max_retries + 1`. When best bid/ask are unavailable (e.g. before the first `l2Book` message), the check is skipped and the exchange-rejection-and-nudge path above is the sole fallback, same as it always has been.
+
+This check only ever prevents a placement that would have been rejected anyway; it never changes which orders end up resting on the book, and it does not apply to the backstop trigger order (section 6.8), which is not a Post-Only limit order.
+
 ### 7.5 Fill Handling & Grid Flip
 
 When a level fully fills (detected via WS `orderUpdates`, primary path):

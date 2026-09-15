@@ -211,6 +211,8 @@ class OrderManager:
         desired: list[DesiredOrder],
         current: list[OpenOrder],
         mid_price: float,
+        best_bid: float = 0.0,
+        best_ask: float = 0.0,
     ) -> None:
         """Compute minimal diff and submit as single batch request.
 
@@ -222,6 +224,9 @@ class OrderManager:
         Args:
             mid_price: Current mid price, used for ALO rejection nudging.
                 Must be positive; ALO retries are suppressed otherwise.
+            best_bid: Current best bid, used to pre-filter placements that
+                would cross the book (section 7.4). Skipped when <= 0.
+            best_ask: Current best ask, used the same way as best_bid.
         """
         if mid_price <= 0 and desired:
             logger.warning(
@@ -231,6 +236,7 @@ class OrderManager:
 
         to_cancel, to_place = self._compute_diff(desired, current)
         to_cancel = self._drop_dead_oids(to_cancel)
+        to_place = self._drop_crossing_placements(to_place, best_bid, best_ask)
 
         if not to_cancel and not to_place:
             return
@@ -258,11 +264,20 @@ class OrderManager:
         breakout_atr_distance: float,
         backstop_buffer_atr: float,
         config_hash: str = "",
+        best_bid: float = 0.0,
+        best_ask: float = 0.0,
     ) -> None:
         """Reconcile grid orders AND update backstop in the same batch.
 
         Minimizes the window where the backstop is absent by including
         backstop cancel/place in the same cancel/place sequence as grid orders.
+
+        Args:
+            best_bid: Current best bid, used to pre-filter grid placements
+                that would cross the book (section 7.4). Skipped when <= 0.
+                Not applied to the backstop trigger order, which is not a
+                Post-Only limit order.
+            best_ask: Current best ask, used the same way as best_bid.
         """
         # The backstop trigger order is never part of GridEngine's desired
         # set, it's a separate order class lifecycle-managed by the block
@@ -280,6 +295,7 @@ class OrderManager:
 
         to_cancel, to_place = self._compute_diff(desired, grid_current)
         to_cancel = self._drop_dead_oids(to_cancel)
+        to_place = self._drop_crossing_placements(to_place, best_bid, best_ask)
         pos_size = position.size if position else 0.0
         coin = self._to_coin(symbol)
 
@@ -585,6 +601,51 @@ class OrderManager:
             logger.debug(
                 "Skipping %d cancel(s) for oids already reported gone", dropped
             )
+        return kept
+
+    @staticmethod
+    def _would_cross(order: DesiredOrder, best_bid: float, best_ask: float) -> bool:
+        """True if placing this Post-Only order is guaranteed to be rejected
+        because it would immediately match the resting book (section 7.4).
+
+        A buy at or above the best ask, or a sell at or below the best bid,
+        cannot post as ALO; sending it only spends address-level request
+        budget (section 2.4) on a rejection the exchange would return anyway.
+        """
+        if order.time_in_force != TimeInForce.ALO:
+            return False
+        if order.side == OrderSide.BUY:
+            return order.price >= best_ask
+        return order.price <= best_bid
+
+    def _drop_crossing_placements(
+        self,
+        to_place: list[DesiredOrder],
+        best_bid: float,
+        best_ask: float,
+    ) -> list[DesiredOrder]:
+        """Filter out placements that would cross the book before they ever
+        reach the exchange.
+
+        Skipped entirely when bid/ask aren't available (<=0): the ALO
+        rejection + nudge retry (section 7.4) remains the fallback safety
+        net in that case, same as it was before this pre-check existed. A
+        dropped level is simply retried next cycle, same as an exhausted-
+        retry level today, it costs zero requests instead of
+        `post_only_max_retries + 1`.
+        """
+        if best_bid <= 0 or best_ask <= 0:
+            return to_place
+        kept: list[DesiredOrder] = []
+        for order in to_place:
+            if self._would_cross(order, best_bid, best_ask):
+                logger.info(
+                    "Skipping placement for %s %s @ %.2f: would cross book "
+                    "(bid=%.2f ask=%.2f)",
+                    order.symbol, order.side.value, order.price, best_bid, best_ask,
+                )
+            else:
+                kept.append(order)
         return kept
 
     @staticmethod

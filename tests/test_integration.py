@@ -103,6 +103,8 @@ def _make_market_data(exchange: FakeExchange) -> MagicMock:
     md.fetch_book_depth = AsyncMock(side_effect=_fetch_depth)
 
     md.get_mid_price = MagicMock(side_effect=lambda sym: exchange.mid)
+    md.get_best_bid = MagicMock(return_value=0.0)
+    md.get_best_ask = MagicMock(return_value=0.0)
     md.get_mark_price = MagicMock(side_effect=lambda sym: exchange.mark)
     md.get_funding_rate = MagicMock(return_value=0.0)
     md.get_moving_average = MagicMock(return_value=0.0)
@@ -124,7 +126,7 @@ def _make_order_manager(exchange: FakeExchange) -> MagicMock:
     om = MagicMock()
     om.initialize = AsyncMock()
 
-    async def _reconcile(symbol, desired, current, mid_price):
+    async def _reconcile(symbol, desired, current, mid_price, **kwargs):
         cancels = len(current)
         exchange.cancel_all(symbol)
         for i, d in enumerate(desired):

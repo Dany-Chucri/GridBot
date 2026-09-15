@@ -806,6 +806,14 @@ class MarketData:
         """Latest mid price for the asset."""
         return self._mid_prices.get(symbol, 0.0)
 
+    def get_best_bid(self, symbol: str) -> float:
+        """Latest best bid for the asset, or 0.0 if not yet available."""
+        return self._best_bid.get(symbol, 0.0)
+
+    def get_best_ask(self, symbol: str) -> float:
+        """Latest best ask for the asset, or 0.0 if not yet available."""
+        return self._best_ask.get(symbol, 0.0)
+
     def get_mark_price(self, symbol: str) -> float:
         """Latest mark price for the asset.
 

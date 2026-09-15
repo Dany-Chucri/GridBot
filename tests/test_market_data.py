@@ -142,6 +142,14 @@ class TestPriceUpdate:
         assert md._best_bid["BTC-PERP"] == 61000.0
         assert md._mid_prices["BTC-PERP"] == pytest.approx(61010.0)
 
+    @pytest.mark.asyncio
+    async def test_get_best_bid_ask(self, md: MarketData):
+        assert md.get_best_bid("BTC-PERP") == 0.0
+        assert md.get_best_ask("BTC-PERP") == 0.0
+        await md._handle_price_update("BTC-PERP", 50000.0, 50010.0)
+        assert md.get_best_bid("BTC-PERP") == 50000.0
+        assert md.get_best_ask("BTC-PERP") == 50010.0
+
 
 # ===========================================================================
 # 3. Trade handling (_handle_trade)

@@ -582,6 +582,9 @@ class Supervisor:
             else:
                 config_hash = ""
 
+            best_bid = self._market_data.get_best_bid(symbol)
+            best_ask = self._market_data.get_best_ask(symbol)
+
             # Reconcile grid + backstop in a single batch (section 6.8)
             if grid_cfg is not None and state.position is not None:
                 await self._order_manager.reconcile_with_backstop(
@@ -595,10 +598,13 @@ class Supervisor:
                     breakout_atr_distance=asset_config.breakout_atr_distance,
                     backstop_buffer_atr=asset_config.backstop_buffer_atr,
                     config_hash=config_hash,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
                 )
             else:
                 await self._order_manager.reconcile(
-                    symbol, desired, state.open_orders, state.mid_price
+                    symbol, desired, state.open_orders, state.mid_price,
+                    best_bid=best_bid, best_ask=best_ask,
                 )
 
         # 7. Persist state + grid config + pending flips

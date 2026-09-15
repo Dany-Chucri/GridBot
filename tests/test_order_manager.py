@@ -494,6 +494,80 @@ class TestAloRejection:
 
 
 # ===========================================================================
+# Test: Book-crossing pre-filter (section 7.4)
+# ===========================================================================
+
+
+class TestCrossingPrefilter:
+    """Placements that would cross the book are dropped before submission."""
+
+    def test_buy_at_or_above_ask_would_cross(self):
+        om = _om()
+        order = _desired(price=50000.0, side=OrderSide.BUY)
+
+        assert om._would_cross(order, best_bid=49990.0, best_ask=50000.0) is True
+        assert om._would_cross(order, best_bid=49990.0, best_ask=50001.0) is False
+
+    def test_sell_at_or_below_bid_would_cross(self):
+        om = _om()
+        order = _desired(price=50000.0, side=OrderSide.SELL)
+
+        assert om._would_cross(order, best_bid=50000.0, best_ask=50010.0) is True
+        assert om._would_cross(order, best_bid=49999.0, best_ask=50010.0) is False
+
+    def test_non_alo_order_never_flagged(self):
+        """Only Post-Only orders can be book-crossing rejections; IOC/GTC
+        orders (flatten) are not subject to this filter."""
+        om = _om()
+        order = _desired(price=50000.0, side=OrderSide.BUY, tif=TimeInForce.IOC)
+
+        assert om._would_cross(order, best_bid=49990.0, best_ask=49995.0) is False
+
+    def test_drop_crossing_placements_filters_only_crossing_orders(self):
+        om = _om()
+        crossing = _desired(
+            client_order_id="0x" + "a" * 32, price=50000.0, side=OrderSide.BUY
+        )
+        clear = _desired(
+            client_order_id="0x" + "b" * 32, price=49900.0, side=OrderSide.BUY
+        )
+
+        kept = om._drop_crossing_placements(
+            [crossing, clear], best_bid=49990.0, best_ask=50000.0
+        )
+
+        assert kept == [clear]
+
+    def test_drop_crossing_placements_no_filter_without_book_data(self):
+        """Missing bid/ask (<=0) fails open: nothing is filtered, and the
+        exchange-rejection + nudge retry remains the fallback."""
+        om = _om()
+        crossing = _desired(price=50000.0, side=OrderSide.BUY)
+
+        assert om._drop_crossing_placements([crossing], best_bid=0.0, best_ask=0.0) == [crossing]
+        assert om._drop_crossing_placements([crossing], best_bid=49990.0, best_ask=0.0) == [crossing]
+
+    @pytest.mark.asyncio
+    async def test_reconcile_skips_crossing_placement_before_submit(self):
+        """A crossing placement never reaches _submit_batch's exchange call."""
+        om = _om()
+        om._client = MagicMock()
+        om._client.bulk_orders.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": [{"resting": {"oid": 1}}]}},
+        }
+
+        desired = [_desired(price=50000.0, side=OrderSide.BUY)]
+
+        await om.reconcile(
+            "BTC-PERP", desired, [], mid_price=50000.0,
+            best_bid=49990.0, best_ask=50000.0,
+        )
+
+        om._client.bulk_orders.assert_not_called()
+
+
+# ===========================================================================
 # Test: Deterministic Order IDs (section 7.3)
 # ===========================================================================
 
