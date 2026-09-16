@@ -86,7 +86,12 @@ class GridEngine:
         anchor = grid_config.anchor
         position_size = state.position.size if state.position else 0.0
 
-        step_bps = self.compute_effective_step(vol_metrics, state.mid_price)
+        # Step is snapshotted onto grid_config at anchor/re-anchor time
+        # (new_grid_config) and held fixed until the next one, per section
+        # 7.3, recomputing it live here would drift level prices (and
+        # therefore client_order_ids, which are hashed from price) every
+        # cycle even between re-anchors.
+        step_bps = grid_config.step_bps
         order_size = self._compute_order_size(vol_metrics)
         inventory_zone = self.classify_inventory_zone(position_size)
 
