@@ -302,15 +302,16 @@ This prevents ghost orders (leftover from a crash) and doubled grids (placing ne
 On receiving SIGTERM or SIGINT (from systemd restart, deployment, manual stop):
 
 1. Set a shutdown flag, the main loop stops after the current cycle completes.
-2. Cancel all resting grid orders (batch cancel), retried against a fresh exchange read until confirmed empty or a bounded attempt budget is exhausted (see entry 40). A single unverified cancel attempt is not sufficient, a `bulk_cancel` call can raise without telling you whether the exchange applied it.
+2. Cancel all resting grid orders (batch cancel), retried against a fresh exchange read until confirmed empty or a bounded attempt budget is exhausted (see entry 40). A single unverified cancel attempt is not sufficient, a `bulk_cancel` call can raise without telling you whether the exchange applied it. This also cancels the backstop trigger order (section 6.8), the exchange doesn't distinguish it from a grid order.
 3. **Do not flatten**, the operator may want to keep the position and restart shortly. Flattening on every restart would incur unnecessary taker fees.
-4. Persist final state to StateStore (position, order map showing all cancelled, regime, timestamps).
-5. Close WS connections cleanly.
-6. Exit with code 0.
+4. **Re-arm the backstop** if a position remains: step 2 just removed it, and there is no further cycle in this run to replace it before exit, so a position left open across the shutdown would otherwise sit fully unprotected until the bot restarts and completes a cycle. Refetches position from the exchange (the last recorded state may be a cycle stale) and re-places the backstop against the current anchor/ATR, same call the failed-flatten path (section 6.7) uses.
+5. Persist final state to StateStore (position, order map showing all cancelled, regime, timestamps).
+6. Close WS connections cleanly.
+7. Exit with code 0.
 
 **Reasoning for cancel-but-don't-flatten:** A graceful shutdown typically means a planned restart (deploy, config change). Flattening would take a market order, pay taker fees, and realize any unrealized loss. The restart sequence (section 4.4) handles resuming from a position. If the operator wants to flatten before stopping, they can trigger that explicitly.
 
-**Hard kill (SIGKILL / crash):** The restart sequence handles this, it reconciles against exchange state and cleans up orphaned orders. Graceful shutdown simply makes restart faster and cleaner.
+**Hard kill (SIGKILL / crash):** The restart sequence handles this, it reconciles against exchange state and cleans up orphaned orders. The backstop is untouched in this case, since the process never reaches the shutdown sequence, so a hard kill actually leaves the dead-man's switch in place; it's only the graceful path (steps 2-4 above) that has to explicitly restore it.
 
 ---
 

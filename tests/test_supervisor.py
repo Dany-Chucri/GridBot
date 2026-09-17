@@ -1328,6 +1328,43 @@ class TestShutdown:
         for state in sup._asset_states.values():
             assert state.bot_state == BotState.SHUTTING_DOWN
 
+    @pytest.mark.asyncio
+    async def test_shutdown_rearms_backstop_for_open_position(self):
+        """cancel_all_orders (step 2) wipes the backstop along with the grid
+        orders; if a position survives, shutdown must re-place it rather
+        than exit and leave the position unprotected (section 6.8)."""
+        om = _mock_order_manager()
+        md = _mock_market_data()
+        pos = Position(
+            symbol="BTC-PERP", size=0.5, avg_entry_price=50000.0, unrealized_pnl=0.0,
+        )
+        md.fetch_position = AsyncMock(return_value=pos)
+        sup = _make_supervisor(order_manager=om, market_data=md)
+        symbol = sup._config.assets[0].symbol
+        sup._asset_states[symbol].grid_config = GridConfig(
+            symbol=symbol, anchor=50000.0, range_atr=2.5, step_bps=20.0, epoch=1,
+        )
+        sup._asset_states[symbol].vol_metrics = VolMetrics(
+            realized_vol=0.5, atr=100.0, spread_bps=2.0,
+            rolling_return_1m=0.0, rolling_return_5m=0.0,
+        )
+
+        await sup._shutdown()
+
+        om.update_backstop.assert_awaited_once()
+        assert sup._asset_states[symbol].position == pos
+
+    @pytest.mark.asyncio
+    async def test_shutdown_skips_backstop_rearm_when_flat(self):
+        om = _mock_order_manager()
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=None)
+        sup = _make_supervisor(order_manager=om, market_data=md)
+
+        await sup._shutdown()
+
+        om.update_backstop.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Fill routing

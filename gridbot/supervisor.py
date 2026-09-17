@@ -754,6 +754,24 @@ class Supervisor:
                 "running to manage them, check the exchange UI directly.",
             )
 
+        # 2b. Step 2 just cancelled every resting order per asset, including
+        # the backstop (cancel_all_orders doesn't distinguish it from grid
+        # orders). Section 4.5 deliberately leaves any open position in
+        # place across the shutdown, restarting the bot is what's supposed
+        # to re-establish it, but there's no cycle left after this to place
+        # one before the process exits. Re-arm it now for whatever position
+        # remains, same as the failed-flatten path does.
+        for asset_cfg in self._config.assets:
+            symbol = asset_cfg.symbol
+            state = self._asset_states[symbol]
+            try:
+                state.position = await self._market_data.fetch_position(symbol)
+                await self._ensure_backstop_for_position(symbol, state, asset_cfg)
+            except Exception:
+                logger.exception(
+                    "Failed to re-arm backstop for %s during shutdown", symbol,
+                )
+
         # 3. Stop fill pump
         if self._fill_task is not None and not self._fill_task.done():
             self._fill_task.cancel()
@@ -1022,22 +1040,26 @@ class Supervisor:
         state.position = await self._market_data.fetch_position(symbol)
         if not fully_flattened:
             logger.error("Flatten incomplete for %s, entering DEAD", symbol)
-            await self._protect_residual_after_failed_flatten(symbol, state, asset_cfg)
+            await self._ensure_backstop_for_position(symbol, state, asset_cfg)
             state.bot_state = BotState.DEAD
             await self._send_alert("CRITICAL", f"Flatten residual for {symbol}")
 
-    async def _protect_residual_after_failed_flatten(
+    async def _ensure_backstop_for_position(
         self, symbol: str, state: AssetState, asset_cfg: AssetConfig,
     ) -> None:
         """Ensure the dead-man's-switch backstop (section 6.8) covers
-        whatever position survives a failed flatten.
+        whatever position currently exists, independent of the normal
+        per-cycle reconcile_with_backstop call.
 
-        cancel_all_orders wiped the prior backstop before the flatten
-        attempt (section 6.7 step 1 cancels everything ahead of the IOCs),
-        and DEAD state skips the normal per-cycle reconcile_with_backstop
-        call, so without this the residual would sit fully unprotected
-        indefinitely. CLAUDE.md: "Backstop stop-losses must exist
-        server-side for every open position."
+        Two callers need this because both leave a position behind with no
+        further cycles to protect it: a failed flatten (cancel_all_orders
+        wiped the prior backstop ahead of the IOCs, section 6.7 step 1, and
+        DEAD state skips reconcile from then on) and shutdown (section 4.5's
+        cancel-everything-don't-flatten step wipes it too, and the bot is
+        about to exit with no cycle left to replace it). Without this the
+        surviving position sits fully unprotected indefinitely. CLAUDE.md:
+        "Backstop stop-losses must exist server-side for every open
+        position."
         """
         position = state.position
         if position is None or abs(position.size) < 1e-12:
