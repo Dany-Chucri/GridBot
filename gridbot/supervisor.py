@@ -1148,6 +1148,7 @@ class Supervisor:
                 f"REST/WS position divergence for {symbol}: local={local_size:.8f} "
                 f"rest={rest_size:.8f}, adopted exchange state",
             )
+            self._pnl_monitor.resync_position(symbol, rest_position)
         state.position = rest_position
 
         self._risk_manager.clear_desync()

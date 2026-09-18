@@ -1299,6 +1299,42 @@ class TestRestReconciliation:
 
         assert any("divergence" in msg for _, msg in alerts)
 
+    @pytest.mark.asyncio
+    async def test_position_divergence_resyncs_pnl_monitor(self):
+        """A missed WS fill can desync PnLMonitor's own ledger even after
+        state.position is corrected here; resync keeps future realized-PnL
+        math from being computed against a stale basis."""
+        symbol = "BTC-PERP"
+        rest_pos = Position(
+            symbol=symbol, size=0.3, avg_entry_price=50000.0,
+            unrealized_pnl=0.0,
+        )
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=rest_pos)
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(market_data=md, pnl_monitor=pm)
+
+        await sup._rest_reconciliation(symbol)
+
+        pm.resync_position.assert_called_once_with(symbol, rest_pos)
+
+    @pytest.mark.asyncio
+    async def test_no_position_divergence_does_not_resync_pnl_monitor(self):
+        symbol = "BTC-PERP"
+        rest_pos = Position(
+            symbol=symbol, size=0.0, avg_entry_price=0.0,
+            unrealized_pnl=0.0,
+        )
+        md = _mock_market_data()
+        md.fetch_position = AsyncMock(return_value=rest_pos)
+        pm = _mock_pnl_monitor()
+        sup = _make_supervisor(market_data=md, pnl_monitor=pm)
+        sup._asset_states[symbol].position = rest_pos  # local already agrees
+
+        await sup._rest_reconciliation(symbol)
+
+        pm.resync_position.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Shutdown

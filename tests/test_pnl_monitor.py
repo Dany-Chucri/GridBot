@@ -179,6 +179,49 @@ class TestRecordFill:
 
 
 # ---------------------------------------------------------------------------
+# 5.1b Position resync (REST/WS position divergence adoption)
+# ---------------------------------------------------------------------------
+
+class TestResyncPosition:
+    """resync_position realigns the average-cost basis to exchange truth."""
+
+    def test_resync_realigns_basis_for_missed_fill(self):
+        # A fill that built the position was missed (e.g. WS gap), so the
+        # ledger never saw it: resync should adopt the exchange's size and
+        # avg_entry_price, not accumulate on top of the stale state.
+        mon = PnLMonitor(_cfg())
+        mon.resync_position("BTC-PERP", _pos(size=0.01137, avg_entry=77000.0))
+
+        # A subsequent real fill (closing the position) now computes
+        # realized PnL against the correct, exchange-sourced basis.
+        mon.record_fill(
+            _fill(price=70907.0, size=0.01137, side=OrderSide.SELL, fill_id="f1")
+        )
+        assert mon.get_realized_pnl("BTC-PERP") == pytest.approx(
+            (70907.0 - 77000.0) * 0.01137
+        )
+
+    def test_resync_to_flat_clears_basis(self):
+        mon = PnLMonitor(_cfg())
+        mon.record_fill(_fill(price=50000, size=0.1, side=OrderSide.BUY, fill_id="f1"))
+        mon.resync_position("BTC-PERP", None)
+
+        # Basis is now flat; the next fill opens fresh rather than reducing
+        # a position record_fill no longer believes exists.
+        mon.record_fill(_fill(price=60000, size=0.1, side=OrderSide.BUY, fill_id="f2"))
+        assert mon.get_realized_pnl("BTC-PERP") == pytest.approx(0.0)
+
+    def test_resync_does_not_touch_realized_pnl(self):
+        mon = PnLMonitor(_cfg())
+        mon.record_fill(_fill(price=50000, size=0.1, side=OrderSide.BUY, fill_id="f1"))
+        mon.record_fill(_fill(price=51000, size=0.1, side=OrderSide.SELL, fill_id="f2"))
+        realized_before = mon.get_realized_pnl("BTC-PERP")
+
+        mon.resync_position("BTC-PERP", _pos(size=0.02, avg_entry=48000.0))
+        assert mon.get_realized_pnl("BTC-PERP") == pytest.approx(realized_before)
+
+
+# ---------------------------------------------------------------------------
 # 5.2 Funding tracking
 # ---------------------------------------------------------------------------
 

@@ -104,6 +104,20 @@ class PnLMonitor:
         """Get locally-tracked realized PnL for an asset."""
         return self._realized_pnl.get(symbol, 0.0)
 
+    def resync_position(self, symbol: str, position: Position | None) -> None:
+        """Resync the average-cost ledger to an exchange-adopted position.
+
+        A missed WS fill (e.g. during a reconnect) leaves this module's
+        position_size/avg_entry out of step with the exchange even after
+        the supervisor adopts REST-truth position elsewhere. Without a
+        resync, the next real fill computes realized PnL against a stale
+        basis, corrupting the ledger permanently since nothing else
+        rewrites it. This does not attempt to reconstruct realized PnL for
+        the missed fill(s), only realigns the basis for future fills.
+        """
+        self._position_size[symbol] = position.size if position else 0.0
+        self._avg_entry[symbol] = position.avg_entry_price if position else 0.0
+
     # ------------------------------------------------------------------
     # Funding tracking
     # ------------------------------------------------------------------
