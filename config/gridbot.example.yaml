@@ -11,7 +11,7 @@ wallet_address: "0x..."
 assets:
   - symbol: BTC-PERP
     leverage: 2.0
-    levels_per_side: 25
+    levels_per_side: 6
     capital_allocation: 0.60
     breakout_atr_distance: 4.5
     cooldown_minutes: 30
@@ -21,7 +21,7 @@ assets:
 
   - symbol: ETH-PERP
     leverage: 2.0
-    levels_per_side: 25
+    levels_per_side: 6
     capital_allocation: 0.40
     breakout_atr_distance: 4.0
     expansion_range_atr: 3.5
