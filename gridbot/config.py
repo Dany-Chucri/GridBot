@@ -131,7 +131,7 @@ def default_eth_config() -> AssetConfig:
         expansion_range_atr=3.5,
         breakout_atr_distance=4.0,
         max_flatten_slippage_bps=75.0,
-        tick_size=0.01,
+        tick_size=0.1,
         sz_decimals=4,
     )
 

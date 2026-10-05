@@ -2028,12 +2028,12 @@ class TestPerAssetTickSize:
 
     @pytest.mark.asyncio
     async def test_eth_uses_eth_tick_size(self):
-        """ETH nudge uses tick_size=0.01."""
+        """ETH nudge uses tick_size=0.1."""
         om = _om()
         order = _desired(price=3000.0, side=OrderSide.BUY, symbol="ETH-PERP")
         result = await om._handle_alo_rejection(order, 3050.0, attempt=0)
         assert result is not None
-        assert abs(result.price - 2999.99) < 1e-9  # 3000 - 0.01
+        assert abs(result.price - 2999.9) < 1e-9  # 3000 - 0.1
 
     @pytest.mark.asyncio
     async def test_custom_tick_size(self):
